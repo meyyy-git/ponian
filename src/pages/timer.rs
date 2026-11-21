@@ -83,8 +83,9 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
             Some(&m) => (format!("{m} min"), tm.minutes == m, Action::TimerSet(m)),
             None => (if custom { format!("{} min", tm.minutes) } else { "Custom\u{2026}".into() }, custom, Action::TimerCustom),
         };
-        g.rrect(cell, 12.0, if selected { 0x34285e } else { CHIP });
-        g.text(&text, &g.f.csmall, cell, if selected { WHITE } else { GRAY });
+        // pilihan aktif: biru aksen yang digelapkan
+        g.rrect(cell, 12.0, if selected { 0x0f3a66 } else { CHIP });
+        g.text(&text, &g.f.csmall, super::lifted(cell), if selected { WHITE } else { GRAY });
         buttons.push((cell, action));
     }
 }

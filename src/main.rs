@@ -192,7 +192,6 @@ pub struct App {
     /// menit sejak tengah malam untuk tiap waktu salat hari ini
     prayer: Option<[u32; 6]>,
     prayer_info: String,
-    prayer_done: String,
     alert: Option<Alert>,
     widgets: (usize, usize),
     cities: (usize, usize),
@@ -316,7 +315,14 @@ impl App {
             View::Idle => (IDLE.0 + peek.0, IDLE.1 + peek.1),
             View::Tucked => (TUCKED.0 + peek.0, TUCKED.1 + peek.1),
             View::Compact => (self.lyric_w + peek.0, LYRIC.1 + peek.1),
-            View::Hud if matches!(self.hud, Some(Hud::Alert | Hud::Info)) => (380.0, 38.0),
+            // popup pengingat dan notifikasi selebar teksnya, seperti pill lirik: ikon 44 di kiri, lalu
+            // teks, lalu tombol tunda kalau ada
+            View::Hud if matches!(self.hud, Some(Hud::Alert | Hud::Info)) => {
+                let alert = self.alert.as_ref();
+                let text = alert.map_or(0.0, |a| self.gfx.width(&a.text, &self.gfx.f.text));
+                let right = if self.hud == Some(Hud::Alert) && alert.is_some_and(|a| a.task.is_some()) { 104.0 } else { 20.0 };
+                ((44.0 + text + right).clamp(170.0, 400.0), 38.0)
+            }
             View::Hud if matches!(self.hud, Some(Hud::Caps(_) | Hud::Lang(_))) => (220.0, 34.0),
             View::Hud if matches!(self.hud, Some(Hud::Volume | Hud::Brightness(_))) => (320.0, 35.0),
             View::Hud => (300.0, 34.0),
@@ -637,13 +643,18 @@ impl App {
 
                 let n = self.pages.len();
                 if n > 1 {
-                    // tombol di tepi menampilkan ikon halaman tetangga (kiri = sebelumnya, kanan = berikutnya),
-                    // jadi terlihat akan pindah ke mana; ikonnya memutih saat disorot
+                    // tombol di tepi: panah kecil di sisi luar dan ikon halaman tetangga (kiri = sebelumnya,
+                    // kanan = berikutnya), jadi terlihat akan pindah ke mana; keduanya memutih saat disorot
                     let neighbor = |by: usize| self.pages[(self.page + by) % n].icon();
-                    for (glyph, x, action) in [(neighbor(n - 1), x0 + 2.0, Action::PrevPage), (neighbor(1), x1 - 24.0, Action::NextPage)] {
-                        let btn = [x, 82.0, x + 22.0, 104.0];
+                    for (left, glyph, action) in [(true, neighbor(n - 1), Action::PrevPage), (false, neighbor(1), Action::NextPage)] {
+                        // lebar 26: isi halaman mulai 31 dari tepi, jadi masih ada jarak
+                        let x = if left { x0 + 1.0 } else { x1 - 27.0 };
+                        let btn = [x, 82.0, x + 26.0, 104.0];
+                        let color = if self.hot == Some(btn) { WHITE } else { 0xc8c8c8 };
                         g.rrect(btn, 11.0, CHIP);
-                        g.text(glyph, &g.f.icon_small, btn, if self.hot == Some(btn) { WHITE } else { 0xc8c8c8 });
+                        let (arrow, icon) = if left { (x + 1.0, x + 8.0) } else { (x + 16.0, x + 1.0) };
+                        g.text(if left { "\u{E96F}" } else { "\u{E970}" }, &g.f.icon_small, [arrow, 82.0, arrow + 9.0, 104.0], color);
+                        g.text(glyph, &g.f.icon_small, [icon, 82.0, icon + 17.0, 104.0], color);
                         buttons.push((btn, action));
                     }
                     // titik halaman; saat di-hover berubah menjadi deretan ikon halaman
@@ -1312,7 +1323,6 @@ fn main() -> Result<()> {
             today: 0,
             prayer: None,
             prayer_info: String::new(),
-            prayer_done: String::new(),
             alert: None,
             widgets: (0, 1),
             cities: (5, 10),

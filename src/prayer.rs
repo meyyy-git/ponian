@@ -96,6 +96,16 @@ pub fn times(y: i64, m: u32, d: u32, lat: f64, lon: f64, tz_hours: f64, method: 
 }
 
 /// Jam pecahan -> menit sejak tengah malam, dibulatkan ke atas seperti jadwal resmi.
+/// Waktu salat yang pengingatnya sedang jatuh tempo pada menit `now`: mulai `before` menit sebelum
+/// waktunya sampai 10 menit sesudahnya. Jendela itu membuat pengingat tidak terlewat saat komputer tidur,
+/// Ponian baru dibuka, atau menitnya bertepatan dengan pengingat lain. Indeks 1 (terbit) dilewati.
+pub fn due(times: &[u32; 6], now: u32, before: u32) -> Option<usize> {
+    [5, 4, 3, 2, 0].into_iter().find(|&i| {
+        let from = times[i].saturating_sub(before);
+        now >= from && now - from <= before + 10
+    })
+}
+
 pub fn minutes(h: f64) -> u32 {
     (fix(h, 24.0) * 60.0).ceil() as u32 % 1440
 }
@@ -113,6 +123,23 @@ mod tests {
             let got = minutes(t[i]) as i64;
             assert!((got - want).abs() <= 2, "{} {y}-{m}-{d}: hitung {}, Kemenag {}", NAMES[i], crate::clock::hhmm(got as u32), expected[i]);
         }
+    }
+
+    #[test]
+    fn reminder_window() {
+        // subuh 04:01, terbit 05:20, zuhur 11:38, asar 15:01, magrib 17:52, isya 19:06
+        let t = [241, 320, 698, 901, 1072, 1146];
+        assert_eq!(due(&t, 1071, 0), None);
+        assert_eq!(due(&t, 1072, 0), Some(4));
+        // masih diingatkan beberapa menit kemudian (komputer baru bangun, Ponian baru dibuka)
+        assert_eq!(due(&t, 1082, 0), Some(4));
+        assert_eq!(due(&t, 1083, 0), None);
+        // terbit bukan waktu salat
+        assert_eq!(due(&t, 320, 0), None);
+        // mode "10 menit sebelumnya"
+        assert_eq!(due(&t, 1135, 10), None);
+        assert_eq!(due(&t, 1136, 10), Some(5));
+        assert_eq!(due(&t, 1146, 10), Some(5));
     }
 
     #[test]

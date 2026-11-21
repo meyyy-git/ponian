@@ -234,20 +234,27 @@ impl App {
 
 
         let notify = settings::dword("Prayer.Notify", 1);
-        if let Some(times) = self.prayer
-            && notify != 0
+        let before = if notify == 2 { 10 } else { 0 };
+        // pengingat lain yang belum dibaca tidak ditimpa: waktu salat dicoba lagi di menit berikutnya
+        if notify != 0
+            && self.hud != Some(Hud::Alert)
+            && let Some(times) = self.prayer
+            && let Some(i) = prayer::due(&times, now.min, before)
         {
-            let before = if notify == 2 { 10 } else { 0 };
-            for i in [0, 2, 3, 4, 5] {
-                let key = format!("{}-{i}", now.day);
-                if times[i].saturating_sub(before) == now.min && self.prayer_done != key {
-                    self.prayer_done = key;
-                    if before == 0 && settings::flag("Prayer.Pause", false) {
-                        let _ = self.tx.send(Msg::Pause);
-                    }
-                    let text = if before == 0 { format!("Time for {} prayer", prayer::NAMES[i]) } else { format!("{} in {before} min ({})", prayer::NAMES[i], clock::hhmm(times[i])) };
-                    return self.alert("\u{E706}", text, None);
+            // dicatat di registry supaya tidak berulang kalau Ponian dibuka ulang dalam jendela waktunya
+            let key = format!("{}-{i}", now.day);
+            if settings::string("Prayer.Done") != key {
+                settings::set_string("Prayer.Done", &key);
+                if before == 0 && settings::flag("Prayer.Pause", false) {
+                    let _ = self.tx.send(Msg::Pause);
                 }
+                let (name, at) = (prayer::NAMES[i], clock::hhmm(times[i]));
+                let text = match now.min.cmp(&times[i]) {
+                    std::cmp::Ordering::Less => format!("{name} in {} min ({at})", times[i] - now.min),
+                    std::cmp::Ordering::Equal => format!("Time for {name} prayer"),
+                    std::cmp::Ordering::Greater => format!("{name} prayer began at {at}"),
+                };
+                self.alert("\u{E706}", text, None);
             }
         }
     }

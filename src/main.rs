@@ -3,6 +3,7 @@
 
 mod lyrics;
 mod media;
+mod pages;
 mod power;
 mod render;
 mod state;
@@ -10,7 +11,8 @@ mod tray;
 mod volume;
 
 use media::{Media, Msg};
-use render::{GRAY, Gfx, R, WHITE};
+use pages::{PAGES, Page};
+use render::{DIM, GRAY, GREEN, Gfx, R, WHITE};
 use state::{Inputs, Timer, View};
 use std::{
     cell::RefCell,
@@ -20,11 +22,7 @@ use std::{
 use windows::{
     Win32::{
         Foundation::*,
-        System::{
-            Diagnostics::Debug::MessageBeep,
-            LibraryLoader::GetModuleHandleW,
-            Threading::CreateMutexW,
-        },
+        System::{Diagnostics::Debug::MessageBeep, LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime, Threading::CreateMutexW},
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext},
             Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
@@ -38,13 +36,18 @@ pub const WM_APP_MEDIA: u32 = WM_APP + 1;
 pub const WM_APP_VOLUME: u32 = WM_APP + 2;
 pub const WM_APP_TRAY: u32 = WM_APP + 3;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_MOUSEHWHEEL: u32 = 0x020E;
 
-/// Ukuran window dalam DIP. Pill digambar di dalamnya, sisanya transparan dan tembus klik.
-const WIN: (f32, f32) = (420.0, 200.0);
-const LINE: (f32, f32) = (120.0, 4.0);
+/// Ukuran window dalam DIP. Notch digambar di dalamnya, sisanya transparan dan tembus klik.
+const WIN: (f32, f32) = (440.0, 190.0);
+const IDLE: (f32, f32) = (152.0, 30.0);
+const EXPANDED: (f32, f32) = (405.0, 172.0);
+/// Notch sedikit membesar begitu kursor masuk, sebelum jeda hover selesai.
+const PEEK: (f32, f32) = (8.0, 3.0);
+const EAR: f32 = 6.0;
 const HUD_MS: u32 = 3000;
 const HOVER_MS: u32 = 150;
-const ANIM_MS: f32 = 220.0;
+const FADE_SECS: f32 = 0.22;
 
 const T_ANIM: usize = 1;
 const T_TICK: usize = 2;
@@ -60,13 +63,16 @@ enum Hud {
 }
 
 #[derive(Clone, Copy)]
-enum Action {
+pub enum Action {
     Media(fn() -> Msg),
     Timer(u64),
     StopTimer,
+    Page(usize),
+    PrevPage,
+    NextPage,
 }
 
-struct App {
+pub struct App {
     hwnd: HWND,
     gfx: Gfx,
     scale: f32,
@@ -81,11 +87,13 @@ struct App {
     user_hidden: bool,
     fullscreen: bool,
     ticking: bool,
+    page: usize,
+    minute: u16,
     view: View,
     cur: (f32, f32),
     from: (f32, f32),
     to: (f32, f32),
-    /// isi pill di-fade hanya kalau bentuknya berganti, bukan saat ukurannya saja yang berubah
+    /// isi notch di-fade hanya kalau bentuknya berganti, bukan saat ukurannya saja yang berubah
     fade: bool,
     anim_start: Option<Instant>,
     born: Instant,
@@ -101,37 +109,34 @@ impl App {
         self.timer == Timer::Ringing
     }
 
+    fn timer_running(&self) -> bool {
+        matches!(self.timer, Timer::Running(_))
+    }
+
     fn target(&self, view: View) -> (f32, f32) {
         let m = &self.media;
-        let timer = matches!(self.timer, Timer::Running(_));
+        let peek = if self.inside { PEEK } else { (0.0, 0.0) };
         match view {
-            View::Hidden => (LINE.0, 0.0),
-            View::Line => LINE,
-            View::Hud => (280.0, 36.0),
-            View::Compact if !m.playing => (110.0, 32.0),
-            View::Compact => (if m.lyrics.is_some() { 380.0 } else { 260.0 } + if timer { 50.0 } else { 0.0 }, 32.0),
-            View::Expanded => {
-                let media = match (m.session, m.lyrics.is_some()) {
-                    (false, _) => 36.0,
-                    (true, false) => 90.0,
-                    (true, true) => 134.0,
-                };
-                (360.0, media + 40.0)
+            View::Hidden => (IDLE.0, 0.0),
+            View::Idle => (IDLE.0 + peek.0, IDLE.1 + peek.1),
+            View::Compact => {
+                let w = if m.lyrics.is_some() { 360.0 } else { 280.0 } + if self.timer_running() { 54.0 } else { 0.0 };
+                (w + peek.0, IDLE.1 + peek.1)
             }
+            View::Hud => (300.0, 34.0),
+            View::Expanded => EXPANDED,
         }
     }
 
-    /// Hitung ulang bentuk pill dari keadaan sekarang, lalu gambar.
+    /// Hitung ulang bentuk notch dari keadaan sekarang, lalu gambar.
     fn update(&mut self) {
         let playing = self.media.session && self.media.playing;
-        let timer = matches!(self.timer, Timer::Running(_));
         let view = state::view(Inputs {
             hidden: self.user_hidden || self.fullscreen,
             hover: self.hover,
             ringing: self.ringing(),
             hud: self.hud.is_some(),
             playing,
-            timer,
         });
         let to = self.target(view);
         unsafe {
@@ -163,134 +168,127 @@ impl App {
     fn draw(&mut self) {
         let mut k = 1.0;
         if let Some(start) = self.anim_start {
-            let t = start.elapsed().as_secs_f32() * 1000.0 / ANIM_MS;
-            let e = state::ease(t);
+            let t = start.elapsed().as_secs_f32();
+            let e = state::spring(t);
             self.cur = (self.from.0 + (self.to.0 - self.from.0) * e, self.from.1 + (self.to.1 - self.from.1) * e);
             if self.fade {
-                k = e;
+                k = (t / FADE_SECS).min(1.0);
             }
-            if t >= 1.0 {
+            if t >= state::SPRING_SECS {
                 (self.anim_start, self.fade, self.cur) = (None, false, self.to);
                 let _ = unsafe { KillTimer(Some(self.hwnd), T_ANIM) };
             }
         }
 
-        let (g, m) = (&self.gfx, &self.media);
         let mut buttons = Vec::new();
         let (w, h) = self.cur;
         let cx = WIN.0 / 2.0;
+        let g = &self.gfx;
         g.begin();
         if h > 0.1 {
-            // bagian atas pill sengaja keluar layar supaya menempel di tepi atas seperti notch
-            let radius = h.min(18.0);
             let blink = self.ringing() && (self.born.elapsed().as_millis() / 500) % 2 == 1;
+            // radius sudut bawah ikut membesar bersama tinggi notch
+            let radius = 11.0 + ((h - IDLE.1) / (EXPANDED.1 - IDLE.1)).clamp(0.0, 1.0) * 13.0;
             g.alpha.set(1.0);
-            g.rrect([cx - w / 2.0, -radius, cx + w / 2.0, h], radius, if blink { 0x8a3a00 } else { 0x000000 });
+            g.notch(cx - w / 2.0, cx + w / 2.0, h, radius, EAR, if blink { 0x8a3a00 } else { 0x000000 });
             g.clip([cx - w / 2.0, 0.0, cx + w / 2.0, h]);
             g.alpha.set(k);
-            // isi diletakkan menurut ukuran tujuan supaya tidak ikut bergeser selama animasi
-            let (x0, x1) = (cx - self.to.0 / 2.0, cx + self.to.0 / 2.0);
-            let now = Instant::now();
-            let remaining = self.timer.remaining(now).map(state::mmss);
-            let track = if m.artist.is_empty() { m.title.clone() } else { format!("{} \u{2014} {}", m.title, m.artist) };
-            let line = m.lyrics.as_ref().map(|l| (l, lyrics::active(l, m.pos())));
-
-            match self.view {
-                View::Compact if m.playing => {
-                    let lyric = line.and_then(|(l, i)| Some(l[i?].1.as_str())).filter(|s| !s.is_empty());
-                    let right = if remaining.is_some() { 58.0 } else { 0.0 };
-                    g.text(lyric.unwrap_or(&track), &g.center, [x0 + 16.0, 0.0, x1 - 16.0 - right, 32.0], WHITE);
-                    if let Some(r) = &remaining {
-                        g.text(r, &g.csmall, [x1 - 66.0, 0.0, x1 - 12.0, 32.0], GRAY);
-                    }
-                }
-                View::Compact => {
-                    g.text("\u{E916}", &g.icon, [x0 + 10.0, 0.0, x0 + 38.0, 32.0], WHITE);
-                    g.text(remaining.as_deref().unwrap_or(""), &g.center, [x0 + 34.0, 0.0, x1 - 12.0, 32.0], WHITE);
-                }
-                View::Hud => match self.hud {
-                    Some(Hud::Volume) => {
-                        let v = volume::VOLUME.load(Relaxed);
-                        let (muted, pct) = (v & volume::MUTE != 0, (v & !volume::MUTE).min(100));
-                        g.text(if muted { "\u{E74F}" } else { "\u{E767}" }, &g.icon, [x0 + 12.0, 0.0, x0 + 42.0, 36.0], WHITE);
-                        let (b0, b1) = (x0 + 48.0, x1 - 58.0);
-                        g.rrect([b0, 16.0, b1, 20.0], 2.0, 0x3a3a3a);
-                        if pct > 0 && !muted {
-                            g.rrect([b0, 16.0, b0 + (b1 - b0) * pct as f32 / 100.0, 20.0], 2.0, WHITE);
-                        }
-                        g.text(&format!("{pct}%"), &g.csmall, [x1 - 54.0, 0.0, x1 - 12.0, 36.0], WHITE);
-                    }
-                    Some(Hud::Power(plugged, pct)) => {
-                        g.rrect([x0 + 16.0, 12.0, x0 + 40.0, 24.0], 3.0, 0x555555);
-                        g.rrect([x0 + 41.0, 16.0, x0 + 43.0, 20.0], 1.0, 0x555555);
-                        let fill = if plugged { 0x4cd964 } else { WHITE };
-                        g.rrect([x0 + 18.0, 14.0, x0 + 18.0 + 20.0 * pct.max(8) as f32 / 100.0, 22.0], 1.5, fill);
-                        let label = if plugged { "Mengisi daya" } else { "Memakai baterai" };
-                        g.text(&format!("{label} \u{B7} {pct}%"), &g.text, [x0 + 54.0, 0.0, x1 - 12.0, 36.0], WHITE);
-                    }
-                    Some(Hud::Track) => g.text(&track, &g.center, [x0 + 16.0, 0.0, x1 - 16.0, 36.0], WHITE),
-                    None => {}
-                },
-                View::Expanded => {
-                    let (l, r) = (x0 + 18.0, x1 - 18.0);
-                    let mut y = 10.0;
-                    if m.session {
-                        g.text(&m.title, &g.bold, [l, y, r, y + 20.0], WHITE);
-                        g.text(&m.artist, &g.small, [l, y + 20.0, r, y + 38.0], GRAY);
-                        y += 42.0;
-                        let toggle = if m.playing { "\u{E769}" } else { "\u{E768}" };
-                        let controls: [(&str, fn() -> Msg); 3] = [("\u{E892}", || Msg::Prev), (toggle, || Msg::Toggle), ("\u{E893}", || Msg::Next)];
-                        for (i, (glyph, msg)) in controls.into_iter().enumerate() {
-                            let x = cx - 66.0 + i as f32 * 44.0;
-                            let b = [x, y, x + 44.0, y + 34.0];
-                            g.text(glyph, &g.icon, b, WHITE);
-                            buttons.push((b, Action::Media(msg)));
-                        }
-                        y += 38.0;
-                        if let Some((lines, i)) = line {
-                            let text = |i: Option<usize>| i.and_then(|i| lines.get(i)).map_or("", |l| l.1.as_str());
-                            g.text(text(i), &g.center, [l, y, r, y + 22.0], WHITE);
-                            g.text(text(Some(i.map_or(0, |i| i + 1))), &g.csmall, [l, y + 22.0, r, y + 40.0], GRAY);
-                            y += 44.0;
-                        }
-                    } else {
-                        g.text("Tidak ada media diputar", &g.small, [l, y, r, y + 20.0], GRAY);
-                        y += 26.0;
-                    }
-                    let mut chip = |slot: f32, label: &str, action: Action| {
-                        let x = r - 56.0 - slot * 62.0;
-                        let b = [x, y + 1.0, x + 56.0, y + 27.0];
-                        g.rrect(b, 13.0, 0x2a2a2a);
-                        g.text(label, &g.csmall, b, WHITE);
-                        buttons.push((b, action));
-                    };
-                    match (self.timer, &remaining) {
-                        (Timer::Ringing, _) => {
-                            g.text("Waktu habis", &g.bold, [l, y, r - 70.0, y + 28.0], WHITE);
-                            chip(0.0, "OK", Action::StopTimer);
-                        }
-                        (_, Some(rem)) => {
-                            g.text(&format!("Timer {rem}"), &g.text, [l, y, r - 70.0, y + 28.0], WHITE);
-                            chip(0.0, "Batal", Action::StopTimer);
-                        }
-                        _ => {
-                            g.text("Timer", &g.small, [l, y, l + 60.0, y + 28.0], GRAY);
-                            for (slot, minutes) in [(2.0, 5), (1.0, 15), (0.0, 25)] {
-                                chip(slot, &format!("{minutes} mnt"), Action::Timer(minutes));
-                            }
-                        }
-                    }
-                }
-                View::Hidden | View::Line => {}
-            }
+            self.content(cx, &mut buttons);
             g.unclip();
         }
         g.end(self.hwnd);
         self.buttons = buttons;
     }
 
+    /// Isi notch diletakkan menurut ukuran tujuan supaya tidak ikut bergeser selama animasi.
+    fn content(&self, cx: f32, buttons: &mut Vec<(R, Action)>) {
+        let (g, m) = (&self.gfx, &self.media);
+        let (x0, x1, h) = (cx - self.to.0 / 2.0, cx + self.to.0 / 2.0, self.to.1);
+        let now = Instant::now();
+        let remaining = self.timer.remaining(now).map(state::mmss);
+        let battery = power::status();
+        let clock = unsafe { GetLocalTime() };
+
+        match self.view {
+            View::Idle | View::Compact => {
+                if let Some((plugged, pct)) = battery {
+                    battery_ring(g, x0 + 19.0, h / 2.0, 7.5, plugged, pct);
+                }
+                let right = if self.view == View::Compact && remaining.is_some() { 64.0 } else { 40.0 };
+                let center = [x0 + 34.0, 0.0, x1 - right, h];
+                if self.view == View::Compact {
+                    let line = m.lyrics.as_ref().and_then(|l| Some(l[lyrics::active(l, m.pos())?].1.as_str())).filter(|s| !s.is_empty());
+                    let track = if m.artist.is_empty() { m.title.clone() } else { format!("{} \u{2014} {}", m.title, m.artist) };
+                    g.text(line.unwrap_or(&track), &g.f.center, center, WHITE);
+                } else {
+                    let text = remaining.clone().unwrap_or_else(|| format!("{:02}:{:02}", clock.wHour, clock.wMinute));
+                    g.text(&text, &g.f.cbold, center, WHITE);
+                }
+                match (&remaining, self.view) {
+                    (Some(rem), View::Compact) => g.text(rem, &g.f.csmall, [x1 - 62.0, 0.0, x1 - 12.0, h], GRAY),
+                    (Some(_), _) => g.text("\u{E916}", &g.f.icon_small, [x1 - 30.0, 0.0, x1 - 14.0, h], GRAY),
+                    (None, _) if m.session && m.playing => wave(g, x1 - 22.0, h / 2.0),
+                    _ => {}
+                }
+            }
+            View::Hud => match self.hud {
+                Some(Hud::Volume) => {
+                    let v = volume::VOLUME.load(Relaxed);
+                    let (muted, pct) = (v & volume::MUTE != 0, (v & !volume::MUTE).min(100));
+                    g.text(if muted { "\u{E74F}" } else { "\u{E767}" }, &g.f.icon, [x0 + 14.0, 0.0, x0 + 44.0, h], WHITE);
+                    let (b0, b1) = (x0 + 50.0, x1 - 60.0);
+                    g.rrect([b0, h / 2.0 - 2.0, b1, h / 2.0 + 2.0], 2.0, 0x3a3a3a);
+                    if pct > 0 && !muted {
+                        g.rrect([b0, h / 2.0 - 2.0, b0 + (b1 - b0) * pct as f32 / 100.0, h / 2.0 + 2.0], 2.0, WHITE);
+                    }
+                    g.text(&format!("{pct}%"), &g.f.csmall, [x1 - 56.0, 0.0, x1 - 14.0, h], WHITE);
+                }
+                Some(Hud::Power(plugged, pct)) => {
+                    battery_ring(g, x0 + 22.0, h / 2.0, 8.0, plugged, pct);
+                    let label = if plugged { "Mengisi daya" } else { "Memakai baterai" };
+                    g.text(&format!("{label} \u{B7} {pct}%"), &g.f.text, [x0 + 40.0, 0.0, x1 - 14.0, h], WHITE);
+                }
+                Some(Hud::Track) => {
+                    let track = if m.artist.is_empty() { m.title.clone() } else { format!("{} \u{2014} {}", m.title, m.artist) };
+                    g.text(&track, &g.f.center, [x0 + 34.0, 0.0, x1 - 34.0, h], WHITE);
+                    wave(g, x1 - 22.0, h / 2.0);
+                }
+                None => {}
+            },
+            View::Expanded => {
+                let page = PAGES[self.page];
+                g.text(page.title(), &g.f.bold, [x0 + 24.0, 8.0, x0 + 190.0, 34.0], WHITE);
+                g.text(&format!("{:02}:{:02}", clock.wHour, clock.wMinute), &g.f.rbold, [x1 - 74.0, 8.0, x1 - 22.0, 34.0], WHITE);
+                let date = state::date_id(clock.wDayOfWeek, clock.wDay, clock.wMonth, clock.wYear);
+                g.text(&date, &g.f.rsmall, [x1 - 190.0, 8.0, x1 - 80.0, 34.0], GRAY);
+                if let Some((plugged, pct)) = battery {
+                    battery_ring(g, x1 - 200.0, 21.0, 7.0, plugged, pct);
+                }
+
+                page.draw(self, g, [x0 + 32.0, 42.0, x1 - 32.0, 148.0], buttons);
+
+                if PAGES.len() > 1 {
+                    for (glyph, x, action) in [("\u{E76B}", x0 + 6.0, Action::PrevPage), ("\u{E76C}", x1 - 28.0, Action::NextPage)] {
+                        let btn = [x, 78.0, x + 22.0, 112.0];
+                        g.text(glyph, &g.f.icon_small, btn, DIM);
+                        buttons.push((btn, action));
+                    }
+                    let widths: Vec<f32> = (0..PAGES.len()).map(|i| if i == self.page { 16.0 } else { 5.0 }).collect();
+                    let total = widths.iter().sum::<f32>() + 5.0 * (PAGES.len() - 1) as f32;
+                    let mut x = cx - total / 2.0;
+                    for (i, w) in widths.into_iter().enumerate() {
+                        g.rrect([x, 158.0, x + w, 163.0], 2.5, if i == self.page { WHITE } else { DIM });
+                        buttons.push(([x - 3.0, 152.0, x + w + 3.0, 170.0], Action::Page(i)));
+                        x += w + 5.0;
+                    }
+                }
+            }
+            View::Hidden => {}
+        }
+    }
+
     fn click(&mut self, x: f32, y: f32) {
-        // saat timer berbunyi, klik di mana pun pada pill menghentikannya
+        // saat timer berbunyi, klik di mana pun pada notch menghentikannya
         if self.ringing() {
             self.timer = Timer::Off;
         } else if let Some(&(_, action)) = self.buttons.iter().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]) {
@@ -298,9 +296,16 @@ impl App {
                 Action::Media(msg) => drop(self.tx.send(msg())),
                 Action::Timer(minutes) => self.timer = Timer::start(minutes, Instant::now()),
                 Action::StopTimer => self.timer = Timer::Off,
+                Action::Page(i) => self.page = i,
+                Action::PrevPage => self.turn(-1),
+                Action::NextPage => self.turn(1),
             }
         }
         self.update();
+    }
+
+    fn turn(&mut self, by: isize) {
+        self.page = (self.page as isize + by).rem_euclid(PAGES.len() as isize) as usize;
     }
 
     /// Letakkan window di tengah-atas monitor utama dan buat ulang permukaan gambar untuk DPI sekarang.
@@ -322,8 +327,9 @@ impl App {
                     self.inside = true;
                     let mut track = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: self.hwnd, dwHoverTime: 0 };
                     let _ = TrackMouseEvent(&mut track);
-                    // jeda singkat supaya pill tidak melebar saat kursor hanya lewat
+                    // jeda singkat supaya notch tidak terbuka saat kursor hanya lewat
                     SetTimer(Some(self.hwnd), T_HOVER, HOVER_MS, None);
+                    self.update();
                 }
                 WM_MOUSELEAVE => {
                     (self.inside, self.hover) = (false, false);
@@ -334,22 +340,34 @@ impl App {
                     let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
                     self.click(dip(lp.0), dip(lp.0 >> 16));
                 }
+                WM_MOUSEWHEEL | WM_MOUSEHWHEEL if self.view == View::Expanded => {
+                    let delta = (wp.0 >> 16) as i16;
+                    // roda vertikal: turun = halaman berikutnya; roda horizontal: kanan = berikutnya
+                    let forward = if msg == WM_MOUSEWHEEL { delta < 0 } else { delta > 0 };
+                    self.turn(if forward { 1 } else { -1 });
+                    self.update();
+                }
                 WM_TIMER => match wp.0 {
                     T_ANIM => self.draw(),
                     T_TICK => {
                         if self.timer.tick(Instant::now()) {
                             let _ = MessageBeep(MB_ICONASTERISK);
+                            self.page = PAGES.iter().position(|p| *p == Page::Timer).unwrap_or(0);
                             self.update();
-                        } else if self.anim_start.is_none() && !matches!(self.view, View::Hidden | View::Line) {
+                        } else if self.anim_start.is_none() && self.view != View::Hidden {
                             self.draw();
                         }
                     }
                     T_POLL => {
                         let fullscreen = power::fullscreen();
+                        let minute = GetLocalTime().wMinute;
                         if fullscreen != self.fullscreen {
                             self.fullscreen = fullscreen;
                             self.update();
+                        } else if minute != self.minute && self.view != View::Hidden && self.anim_start.is_none() {
+                            self.draw();
                         }
+                        self.minute = minute;
                     }
                     T_HOVER => {
                         let _ = KillTimer(Some(self.hwnd), T_HOVER);
@@ -378,10 +396,9 @@ impl App {
                 WM_APP_VOLUME => self.show_hud(Hud::Volume),
                 WM_POWERBROADCAST if wp.0 as u32 == PBT_APMPOWERSTATUSCHANGE => {
                     // pesan ini juga datang tiap persen berubah; HUD hanya saat charger dicolok atau dicabut
-                    if let Some((plugged, pct)) = power::status()
-                        && self.plugged.replace(plugged) != Some(plugged)
-                    {
-                        self.show_hud(Hud::Power(plugged, pct));
+                    match power::status() {
+                        Some((plugged, pct)) if self.plugged.replace(plugged) != Some(plugged) => self.show_hud(Hud::Power(plugged, pct)),
+                        _ => self.draw(),
                     }
                 }
                 WM_DISPLAYCHANGE | WM_DPICHANGED => {
@@ -393,6 +410,23 @@ impl App {
                 _ => {}
             }
         }
+    }
+}
+
+/// Cincin baterai: hijau saat dicas, merah saat hampir habis, dengan ikon petir saat dicas.
+fn battery_ring(g: &Gfx, cx: f32, cy: f32, rad: f32, plugged: bool, pct: u8) {
+    let color = if plugged { GREEN } else if pct <= 20 { 0xff453a } else { WHITE };
+    g.ring(cx, cy, rad, 2.2, pct as f32 / 100.0, color, 0x333333);
+    if plugged {
+        g.text("\u{E945}", &g.f.icon_small, [cx - rad, cy - rad, cx + rad, cy + rad], color);
+    }
+}
+
+/// Ikon gelombang audio diam (tidak beranimasi, supaya CPU tetap nol saat musik diputar).
+fn wave(g: &Gfx, cx: f32, cy: f32) {
+    for (i, bar) in [5.0f32, 9.0, 13.0, 9.0, 6.0].into_iter().enumerate() {
+        let x = cx - 11.0 + i as f32 * 4.4;
+        g.rrect([x, cy - bar / 2.0, x + 2.2, cy + bar / 2.0], 1.1, WHITE);
     }
 }
 
@@ -501,15 +535,19 @@ fn main() -> Result<()> {
             user_hidden: tray::get(tray::HIDE_NOTCH, false),
             fullscreen: false,
             ticking: false,
-            view: View::Line,
-            cur: LINE,
-            from: LINE,
-            to: LINE,
+            page: 0,
+            minute: GetLocalTime().wMinute,
+            view: View::Idle,
+            cur: (IDLE.0, 0.0),
+            from: (IDLE.0, 0.0),
+            to: (IDLE.0, 0.0),
             fade: false,
             anim_start: None,
             born: Instant::now(),
             buttons: Vec::new(),
         };
+        // mulai dari tinggi 0 supaya notch "turun" dari tepi layar saat app dibuka
+        app.view = View::Hidden;
         app.update();
         APP.set(Some(app));
 

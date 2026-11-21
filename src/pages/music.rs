@@ -2,7 +2,7 @@ use crate::{
     Action, App, NOTE,
     media::{ART, Msg},
     render::{ACCENT, CARD, DIM, GRAY, Gfx, R, WHITE},
-    settings, volume,
+    volume,
 };
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -48,7 +48,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     let hit = |x: f32, half: f32| [x - half, cy - 14.0, x + half, cy + 14.0];
 
     // tombol lirik: menyalakan atau mematikan lirik di pill
-    let lyrics_on = settings::flag("ShowLyrics", true);
+    let lyrics_on = app.lyrics_on;
     g.text("\u{E8BD}", &g.f.icon, hit(l + 30.0, 16.0), if !lyrics_on { DIM } else if m.lyrics.is_some() { ACCENT } else { WHITE });
     buttons.push((hit(l + 30.0, 16.0), Action::LyricsToggle));
 

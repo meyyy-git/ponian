@@ -2,7 +2,7 @@
 use crate::{
     App, astro, clock, currency, online, prayer,
     render::{ACCENT, DIM, GRAY, Gfx, R, WHITE},
-    store, water, weather, worldclock,
+    water, weather, worldclock,
 };
 
 pub const WIDGETS: [&str; 10] = ["Jam dunia", "Hitung mundur", "Bulan", "Minggu ini", "Salat berikutnya", "Fokus hari ini", "Air hari ini", "Tanggal", "Cuaca", "Kurs"];
@@ -26,8 +26,7 @@ fn date(day: i64) -> String {
 }
 
 /// Acara hitung mundur: buatan user di Pengaturan, atau hari besar terdekat.
-pub fn countdown(today: i64) -> (String, i64) {
-    let custom = crate::settings::string("Countdown");
+pub fn countdown(today: i64, custom: &str) -> (String, i64) {
     if let Some((d, name)) = custom.split_once(' ')
         && let Some(day) = clock::parse_key(d)
         && day >= today
@@ -70,7 +69,7 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
         }
         1 => {
             title("HITUNG MUNDUR");
-            let (name, day) = countdown(now.day);
+            let (name, day) = countdown(now.day, &app.countdown);
             let left = day - now.day;
             g.text(&if left == 0 { "Hari ini".into() } else { format!("{left} hari") }, &g.f.big, [l, t + 18.0, r, t + 56.0], WHITE);
             g.text(&name, &g.f.text, [l, t + 56.0, r, t + 74.0], WHITE);
@@ -92,7 +91,7 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
         }
         3 => {
             title("FOKUS 7 HARI");
-            let log = store::daily("focus.txt");
+            let log = &app.focus_log;
             let days: Vec<u32> = (0..7).map(|i| log.iter().find(|e| e.0 == now.day - 6 + i).map_or(0, |e| e.1)).collect();
             let max = days.iter().copied().max().unwrap_or(0).max(1);
             let w = (r - l) / 7.0;
@@ -118,7 +117,7 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
         }
         5 => {
             title("FOKUS HARI INI");
-            let min = store::daily_get("focus.txt", now.day);
+            let min = app.focus_min(now.day);
             g.text(&clock::span(min), &g.f.big, [l, t + 22.0, r, t + 60.0], WHITE);
             let sessions = min / app.durations.focus.max(1) as u32;
             g.text(&format!("{sessions} sesi fokus"), &g.f.small, [l, t + 60.0, r, b], GRAY);
@@ -138,12 +137,12 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
                     g.text(desc, &g.f.text, [l, t + 56.0, r, t + 74.0], WHITE);
                     g.text(&format!("{:.0}\u{B0} \u{2013} {:.0}\u{B0} \u{B7} MET Norway", w.min, w.max), &g.f.small, [l, t + 72.0, r, b], GRAY);
                 }
-                None => g.text(if crate::location::current().is_some() { "Memuat cuaca\u{2026}" } else { "Atur lokasi di Pengaturan" }, &g.f.small, [l, t + 22.0, r, b], GRAY),
+                None => g.text(if app.prayer.is_some() { "Memuat cuaca\u{2026}" } else { "Atur lokasi di Pengaturan" }, &g.f.small, [l, t + 22.0, r, b], GRAY),
             }
         }
         9 => {
             title("KURS");
-            let main = currency::MAIN[(crate::settings::dword("Rates.Main", 0) as usize).min(currency::MAIN.len() - 1)];
+            let main = currency::MAIN[app.rates_main];
             match online::RATES.lock().unwrap().clone() {
                 Some(rates) => {
                     for (row, code) in currency::MAIN.iter().filter(|c| **c != main).take(3).enumerate() {

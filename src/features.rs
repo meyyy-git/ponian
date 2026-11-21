@@ -49,10 +49,19 @@ impl App {
             until: 17 + settings::dword("Water.Until", 4).min(7),
         };
         self.sound = settings::flag("Sound", true);
+        self.lyrics_on = settings::flag("ShowLyrics", true);
+        self.countdown = settings::string("Countdown");
+        self.rates_main = (settings::dword("Rates.Main", 0) as usize).min(crate::currency::MAIN.len() - 1);
+        self.snooze = SNOOZE[(settings::dword("Todo.Snooze", 1) as usize).min(2)];
         self.notify_preview = settings::flag("Notify.Preview", false);
         self.widgets = (settings::dword("Widget.Left", 0) as usize, settings::dword("Widget.Right", 1) as usize);
         self.cities = (settings::dword("Clock.City1", 5) as usize, settings::dword("Clock.City2", 10) as usize);
         self.compute_prayer();
+    }
+
+    /// Menit fokus Pomodoro pada hari `day`.
+    pub fn focus_min(&self, day: i64) -> u32 {
+        self.focus_log.iter().find(|e| e.0 == day).map_or(0, |e| e.1)
     }
 
     pub fn compute_prayer(&mut self) {
@@ -191,6 +200,7 @@ impl App {
         self.tasks = todo::load(&store::read("tasks.txt"));
         todo::cleanup(&mut self.tasks, self.today);
         self.water = store::daily_get("water.txt", self.today);
+        self.focus_log = store::daily("focus.txt");
         // pengingat minum pertama baru datang 45 menit setelah Ponian dibuka, bukan langsung
         self.water_reminded = clock::now().min;
         self.files = shelf::load_files();
@@ -248,7 +258,8 @@ impl App {
         let Some(phase) = self.pomo.tick(Instant::now()) else { return false };
         if phase == Phase::Focus {
             let day = clock::now().day;
-            store::daily_set("focus.txt", day, store::daily_get("focus.txt", day) + self.durations.focus as u32);
+            store::daily_set("focus.txt", day, self.focus_min(day) + self.durations.focus as u32);
+            self.focus_log = store::daily("focus.txt");
         }
         self.beep();
         self.page = self.pages.iter().position(|p| *p == Page::Pomodoro).unwrap_or(self.page);
@@ -264,7 +275,8 @@ impl App {
             Action::Seek { .. } => {}
             Action::Mute => drop(self.tx.send(Msg::Mute)),
             Action::LyricsToggle => {
-                settings::set_dword("ShowLyrics", !settings::flag("ShowLyrics", true) as u32);
+                self.lyrics_on = !self.lyrics_on;
+                settings::set_dword("ShowLyrics", self.lyrics_on as u32);
                 let _ = self.tx.send(Msg::Refresh);
             }
             Action::WaterToggle => {
@@ -305,7 +317,7 @@ impl App {
             }
             Action::Snooze => {
                 let title = self.alert.take().and_then(|a| a.task);
-                let snooze = SNOOZE[(settings::dword("Todo.Snooze", 1) as usize).min(2)];
+                let snooze = self.snooze;
                 if let Some(t) = self.tasks.iter_mut().find(|t| Some(&t.title) == title.as_ref() && !t.done) {
                     (t.time, t.day, t.reminded) = (Some((now.min + snooze).min(1439)), now.day, false);
                 }

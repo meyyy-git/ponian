@@ -2,7 +2,7 @@ use super::card;
 use crate::{
     App, clock, prayer,
     render::{GRAY, Gfx, R, WHITE},
-    store, water,
+    water,
 };
 
 pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R) {
@@ -17,7 +17,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R) {
 
     card(g, col(1.0), "Air", &water::ml(app.water), &format!("dari {}", water::ml(app.water_cfg.goal)));
 
-    let focus = store::daily_get("focus.txt", now.day);
+    let focus = app.focus_min(now.day);
     card(g, col(2.0), "Fokus", &clock::span(focus), &format!("{} sesi", focus / app.durations.focus.max(1) as u32));
 
     let line = match app.prayer {

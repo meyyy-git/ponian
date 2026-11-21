@@ -66,6 +66,9 @@ pub struct Gfx {
     bmp: HBITMAP,
     old: HGDIOBJ,
     size: SIZE,
+    /// piksel bitmap, dan jumlah baris teratas yang sedang diikat ke Direct2D
+    bits: *mut u8,
+    bound: Cell<i32>,
 }
 
 const NO_STYLE: Option<&ID2D1StrokeStyle> = None;
@@ -81,7 +84,7 @@ impl Gfx {
                 ..Default::default()
             })?;
             let dc = CreateCompatibleDC(None);
-            let bmp = dib(dc, w, h)?;
+            let (bmp, bits) = dib(dc, w, h)?;
             let old = SelectObject(dc, bmp.into());
             rt.BindDC(dc, &RECT { left: 0, top: 0, right: w, bottom: h })?;
             rt.SetDpi(dpi, dpi);
@@ -122,7 +125,7 @@ impl Gfx {
                 icon_small: font(mdl, 9.5, normal, center)?,
                 icon_big: font(mdl, 24.0, normal, center)?,
             };
-            Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(None), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h } })
+            Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(None), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h }, bits, bound: Cell::new(h) })
         }
     }
 
@@ -130,15 +133,36 @@ impl Gfx {
     pub fn resize(&mut self, w: i32, h: i32, dpi: f32) -> Result<()> {
         unsafe {
             if (w, h) != (self.size.cx, self.size.cy) {
-                let bmp = dib(self.dc, w, h)?;
+                let (bmp, bits) = dib(self.dc, w, h)?;
                 SelectObject(self.dc, bmp.into());
                 let _ = DeleteObject(self.bmp.into());
-                (self.bmp, self.size) = (bmp, SIZE { cx: w, cy: h });
+                (self.bmp, self.bits, self.size) = (bmp, bits, SIZE { cx: w, cy: h });
+                self.bound.set(h);
                 self.rt.BindDC(self.dc, &RECT { left: 0, top: 0, right: w, bottom: h })?;
             }
             self.rt.SetDpi(dpi, dpi);
         }
         Ok(())
+    }
+
+    /// Batasi area gambar ke `rows` baris teratas. Direct2D membersihkan dan menyalin seluruh area yang
+    /// diikat di setiap frame, jadi saat notch kecil tidak perlu mengikat seluruh window.
+    pub fn bind_rows(&self, rows: i32) {
+        let rows = rows.clamp(1, self.size.cy);
+        let bound = self.bound.get();
+        if rows == bound {
+            return;
+        }
+        unsafe {
+            if rows < bound {
+                // baris di bawah area baru tidak lagi disentuh Direct2D; kosongkan sisa gambar lama
+                let row_bytes = self.size.cx as usize * 4;
+                std::ptr::write_bytes(self.bits.add(rows as usize * row_bytes), 0, (bound - rows) as usize * row_bytes);
+            }
+            if self.rt.BindDC(self.dc, &RECT { left: 0, top: 0, right: self.size.cx, bottom: rows }).is_ok() {
+                self.bound.set(rows);
+            }
+        }
     }
 
     pub fn begin(&self) {
@@ -335,13 +359,14 @@ impl Drop for Gfx {
 }
 
 /// Bitmap 32-bit dengan baris dari atas, tempat Direct2D menggambar.
-fn dib(dc: HDC, w: i32, h: i32) -> Result<HBITMAP> {
+fn dib(dc: HDC, w: i32, h: i32) -> Result<(HBITMAP, *mut u8)> {
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, ..Default::default() },
         ..Default::default()
     };
     let mut bits = std::ptr::null_mut();
-    unsafe { CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }
+    let bmp = unsafe { CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }?;
+    Ok((bmp, bits as *mut u8))
 }
 
 fn rect(r: R) -> D2D_RECT_F {

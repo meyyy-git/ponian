@@ -46,8 +46,8 @@ use std::{
 use windows::{
     Win32::{
         Foundation::*,
-        System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime, Threading::CreateMutexW},
-        Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO},
+        System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime, Threading::{CreateMutexW, Sleep}},
+        Graphics::{Dwm::DwmFlush, Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO}},
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext},
             Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
@@ -84,8 +84,9 @@ const LYRIC: (f32, f32) = (300.0, 34.0);
 const HUD_MS: u32 = 3000;
 const HOVER_MS: u32 = 240;
 const FADE_SECS: f32 = 0.22;
+/// jarak antar-frame ikon audio saat musik berjalan
+const AMBIENT_MS: u32 = 50;
 
-const T_ANIM: usize = 1;
 const T_TICK: usize = 2;
 const T_POLL: usize = 3;
 const T_HOVER: usize = 4;
@@ -94,6 +95,15 @@ const T_HUD: usize = 5;
 const T_LYRIC: usize = 6;
 /// lama transisi antarbaris lirik
 const LYRIC_SECS: f32 = 0.42;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Motion {
+    Still,
+    /// gerakan kecil yang terus-menerus (ikon audio)
+    Ambient,
+    /// notch berubah ukuran, halaman berganti, atau baris lirik berganti
+    Transition,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Hud {
@@ -173,6 +183,12 @@ pub struct App {
     press: Option<(f32, f32, usize)>,
     /// tab halaman Shelf: 0 = File, 1 = Clipboard
     shelf_tab: u8,
+    /// salinan setting dan data yang dipakai saat menggambar, supaya tiap frame tidak membaca registry atau file
+    lyrics_on: bool,
+    countdown: String,
+    rates_main: usize,
+    snooze: u32,
+    focus_log: Vec<(i64, u32)>,
     /// baris lirik yang tampil, baris sebelumnya, dan kapan pergantiannya dimulai
     lyric_idx: Option<usize>,
     lyric_cur: String,
@@ -276,7 +292,6 @@ impl App {
                 self.fade = view != self.view;
                 (self.view, self.from, self.to) = (view, self.cur, to);
                 self.anim_start = Some(Instant::now());
-                SetTimer(Some(self.hwnd), T_ANIM, 16, None);
             }
             // selama musik berjalan: ikon audio, baris lirik, dan batang progres ikut bergerak
             let need_tick = self.pomo.running() || self.ringing() || playing;
@@ -322,15 +337,13 @@ impl App {
         if self.lyric_since.is_some_and(|s| s.elapsed().as_secs_f32() >= LYRIC_SECS) {
             self.lyric_since = None;
         }
-        // timer animasi hidup selama masih ada yang bergerak: ukuran notch atau baris lirik
-        if self.anim_start.is_none() && self.lyric_since.is_none() {
-            let _ = unsafe { KillTimer(Some(self.hwnd), T_ANIM) };
-        }
 
         let mut buttons = Vec::new();
         let (w, h) = self.cur;
         let cx = WIN.0 / 2.0;
         let g = &self.gfx;
+        // selama notch berubah ukuran seluruh window digambar; setelah diam cukup setinggi notch
+        g.bind_rows(if self.anim_start.is_some() { i32::MAX } else { ((h + 2.0) * self.scale).ceil() as i32 });
         g.begin();
         if h > 0.1 {
             let blink = self.ringing() && (self.born.elapsed().as_millis() / 500) % 2 == 1;
@@ -350,6 +363,18 @@ impl App {
         }
         g.end(self.hwnd);
         self.buttons = buttons;
+    }
+
+    /// Apa yang sedang bergerak, untuk menentukan seberapa sering frame digambar.
+    fn motion(&self) -> Motion {
+        if self.anim_start.is_some() || self.lyric_since.is_some() {
+            Motion::Transition
+        } else if self.media.session && self.media.playing && matches!(self.view, View::Idle | View::Expanded) {
+            // ikon audio dan batang progres
+            Motion::Ambient
+        } else {
+            Motion::Still
+        }
     }
 
     /// Cocokkan baris lirik dengan posisi putar. Kalau barisnya berganti saat pill lirik tampil, mulai
@@ -378,7 +403,6 @@ impl App {
             let prev = std::mem::replace(&mut self.lyric_cur, text);
             if self.view == View::Compact && !prev.is_empty() {
                 (self.lyric_prev, self.lyric_since) = (prev, Some(Instant::now()));
-                unsafe { SetTimer(Some(self.hwnd), T_ANIM, 16, None) };
             }
         }
         match lines.get(idx.map_or(0, |i| i + 1)) {
@@ -478,7 +502,7 @@ impl App {
                     let right = if a.task.is_some() { 100.0 } else { 16.0 };
                     g.text(&a.text, &g.f.text, [x0 + 44.0, 0.0, x1 - right, h], WHITE);
                     if a.task.is_some() {
-                        let snooze = features::SNOOZE[(settings::dword("Todo.Snooze", 1) as usize).min(2)];
+                        let snooze = self.snooze;
                         pages::chip(g, [x1 - 94.0, 7.0, x1 - 12.0, h - 7.0], &format!("Tunda {snooze} mnt"), CHIP, buttons, Action::Snooze);
                     }
                 }
@@ -549,7 +573,6 @@ impl App {
     fn go(&mut self, page: usize) {
         if page != self.page && self.view == View::Expanded {
             (self.fade, self.from, self.anim_start) = (true, self.cur, Some(Instant::now()));
-            unsafe { SetTimer(Some(self.hwnd), T_ANIM, 16, None) };
         }
         self.page = page;
     }
@@ -667,7 +690,6 @@ impl App {
                     self.update();
                 }
                 WM_TIMER => match wp.0 {
-                    T_ANIM => self.draw(),
                     T_TICK => {
                         if self.pomo_tick() {
                             self.update();
@@ -1078,6 +1100,11 @@ fn main() -> Result<()> {
             dragging: false,
             press: None,
             shelf_tab: 0,
+            lyrics_on: true,
+            countdown: String::new(),
+            rates_main: 0,
+            snooze: 10,
+            focus_log: Vec::new(),
             lyric_idx: None,
             lyric_cur: String::new(),
             lyric_prev: String::new(),
@@ -1126,11 +1153,44 @@ fn main() -> Result<()> {
             settings::open();
         }
 
+        // Selama ada yang bergerak, frame digambar di loop ini dan ditahan DwmFlush sampai penyegaran
+        // layar berikutnya. Timer Windows tidak dipakai untuk animasi: WM_TIMER berprioritas paling
+        // rendah, jadi animasi patah-patah setiap kali mouse bergerak di atas notch.
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            // TranslateMessage mengubah tombol menjadi karakter (WM_CHAR) untuk kotak teks
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        let mut last_ambient = Instant::now();
+        loop {
+            let motion = APP.with_borrow(|a| a.as_ref().map_or(Motion::Still, App::motion));
+            if motion == Motion::Still {
+                if !GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    break;
+                }
+                // TranslateMessage mengubah tombol menjadi karakter (WM_CHAR) untuk kotak teks
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+                continue;
+            }
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    return Ok(());
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if motion == Motion::Transition {
+                // transisi digambar di setiap penyegaran layar
+                APP.with_borrow_mut(|a| a.as_mut().map(App::draw));
+                if DwmFlush().is_err() {
+                    Sleep(10);
+                }
+            } else {
+                // ikon audio cukup 20 kali per detik; di antaranya thread tidur sampai ada pesan
+                let since = last_ambient.elapsed().as_millis() as u32;
+                if since >= AMBIENT_MS {
+                    last_ambient = Instant::now();
+                    APP.with_borrow_mut(|a| a.as_mut().map(App::draw));
+                }
+                MsgWaitForMultipleObjects(None, false, AMBIENT_MS.saturating_sub(since).max(1), QS_ALLINPUT);
+            }
         }
     }
     Ok(())

@@ -37,7 +37,7 @@ pub struct AskState {
     pub thinking: bool,
     pub translate: bool,
     pub error: Option<String>,
-    /// teks dari Smart OCR yang bisa ditanyakan
+    /// teks yang disalin dari layar (OCR) dan bisa ditanyakan
     pub context: Option<String>,
     pub job: Job,
 }

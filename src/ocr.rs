@@ -1,4 +1,4 @@
-//! Smart OCR: pilih area layar, teksnya dibaca dengan mesin OCR bawaan Windows (offline) lalu disalin.
+//! Salin teks dari layar: pilih area, teksnya dibaca dengan mesin OCR bawaan Windows (offline) lalu disalin.
 use crate::WM_APP_OCR;
 use std::{cell::RefCell, sync::Mutex};
 use windows::{

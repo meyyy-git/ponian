@@ -707,7 +707,7 @@ const HOTKEY_OCR: usize = 2;
 
 const ASK_KEYS: [&str; 4] = ["Ctrl+Alt+Space", "Ctrl+Alt+A", "Ctrl+Shift+Space", "Alt+Shift+Space"];
 
-/// Daftarkan shortcut Tanya (pilihan user) dan Ctrl+Alt+T untuk Smart OCR.
+/// Daftarkan shortcut Tanya (pilihan user) dan Ctrl+Alt+T untuk menyalin teks dari layar.
 /// Mengembalikan nama shortcut yang gagal karena sudah dipakai app lain.
 fn register_hotkeys(hwnd: HWND) -> Vec<&'static str> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey, VK_SPACE};
@@ -860,7 +860,7 @@ fn sections() -> Vec<Section> {
                 Item::Choice("Ask.Key", "Shortcut Tanya", || opts(&ASK_KEYS), 0),
                 Item::Text("Gemini", "API key Gemini (gratis di aistudio.google.com)", true),
                 Item::Note("Pertanyaan, teks terjemahan, dan teks dari layar yang Anda tanyakan dikirim ke Google Gemini. Dengan key gratis, Google bisa memakainya untuk meningkatkan layanan. Hitung cepat dan kurs dihitung di komputer ini."),
-                Item::Check("Ocr.On", "Smart OCR dengan Ctrl+Alt+T (pilih area layar, teksnya disalin)", true),
+                Item::Check("Ocr.On", "Salin teks dari layar (OCR) dengan Ctrl+Alt+T: pilih area, teksnya disalin", true),
                 Item::Note("OCR memakai mesin bawaan Windows dan berjalan offline."),
             ],
         },

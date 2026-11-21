@@ -411,3 +411,25 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// Jalankan pilihan menu klik kanan untuk pintasan ke-`i`: 1 ganti nama, 2 kiri, 3 kanan, 4 hapus.
+    pub fn app_command(&mut self, i: usize, cmd: i32) {
+        if i >= self.apps.len() {
+            return;
+        }
+        match cmd {
+            1 => {
+                self.editing = i;
+                let name = self.apps[i].name.clone();
+                self.open_input(INPUT_APP_NAME, &name, "Nama pintasan");
+            }
+            2 if i > 0 => self.apps.swap(i, i - 1),
+            3 if i + 1 < self.apps.len() => self.apps.swap(i, i + 1),
+            4 => self.remove_app(i),
+            _ => return,
+        }
+        self.hot = None;
+        crate::apps::save(&self.apps);
+    }
+}

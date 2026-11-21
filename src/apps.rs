@@ -14,8 +14,8 @@ use windows::{
     core::{PCWSTR, PWSTR, w},
 };
 
-/// Dua baris berisi enam; satu sel dipakai tombol tambah.
-pub const MAX: usize = 11;
+/// Sampai 11 pintasan tampil besar dengan nama (6 x 2); lebih dari itu tampil kecil tanpa nama (8 x 3).
+pub const MAX: usize = 23;
 
 pub struct Shortcut {
     pub path: String,
@@ -37,11 +37,20 @@ pub fn make(path: &str) -> Shortcut {
 }
 
 pub fn load() -> Vec<Shortcut> {
-    store::read("apps.txt").lines().map(str::trim).filter(|l| !l.is_empty()).take(MAX).map(make).collect()
+    // tiap baris: path, lalu (opsional) tab dan nama buatan user
+    store::read("apps.txt")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(MAX)
+        .map(|l| match l.split_once('\t') {
+            Some((path, name)) => Shortcut { name: name.trim().to_string(), ..make(path.trim()) },
+            None => make(l.trim()),
+        })
+        .collect()
 }
 
 pub fn save(list: &[Shortcut]) {
-    store::write("apps.txt", &list.iter().map(|s| format!("{}\n", s.path)).collect::<String>());
+    store::write("apps.txt", &list.iter().map(|s| format!("{}\t{}\n", s.path, s.name.replace(['\t', '\n'], " "))).collect::<String>());
 }
 
 /// Ikon file seperti yang ditampilkan Explorer, digambar ke bitmap 32-bit.

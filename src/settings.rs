@@ -119,6 +119,8 @@ pub enum Item {
     /// kunci, label, rahasia (dienkripsi dan disamarkan)
     Text(&'static str, &'static str, bool),
     Note(&'static str),
+    /// kotak centang dengan tombol naik/turun: kunci, label, default, fungsi pemindah (indeks item, arah)
+    Movable(&'static str, &'static str, bool, fn(usize, i32)),
 }
 
 pub struct Section {
@@ -151,6 +153,7 @@ thread_local! {
 
 const ID_LIST: i32 = 100;
 const ID_ITEM: i32 = 1000;
+const ID_MOVE: i32 = 3000;
 
 pub fn open() {
     if let Some(hwnd) = UI.with_borrow(|ui| ui.as_ref().map(|u| u.hwnd)) {
@@ -279,6 +282,13 @@ fn build_section(hwnd: HWND) {
                     mk(w!("EDIT"), &value, style, [x, y + 24.0, w - 10.0, 26.0], id);
                     y += 60.0;
                 }
+                Item::Movable(key, label, default, _) => {
+                    let c = mk(w!("BUTTON"), label, WINDOW_STYLE(BS_AUTOCHECKBOX as u32), [x, y, 300.0, 24.0], id);
+                    unsafe { SendMessageW(c, BM_SETCHECK, Some(WPARAM((dword(key, *default as u32) != 0) as usize)), None) };
+                    mk(w!("BUTTON"), "\u{25B2}", WINDOW_STYLE(0), [x + 330.0, y - 1.0, 30.0, 24.0], ID_MOVE + i as i32 * 2);
+                    mk(w!("BUTTON"), "\u{25BC}", WINDOW_STYLE(0), [x + 364.0, y - 1.0, 30.0, 24.0], ID_MOVE + i as i32 * 2 + 1);
+                    y += 30.0;
+                }
                 Item::Note(text) => {
                     let lines = (text.len() as f32 / 70.0).ceil().max(1.0);
                     mk(w!("STATIC"), text, WINDOW_STYLE(0), [x, y, w - 10.0, 20.0 * lines], ID_ITEM + 500 + i as i32);
@@ -297,6 +307,23 @@ fn changed() {
 }
 
 fn on_command(id: i32, code: u32, control: HWND) {
+    // tombol naik/turun: pindahkan item, lalu susun ulang daftar bagian dan kontrolnya
+    if id >= ID_MOVE && code == BN_CLICKED as u32 {
+        let (index, dir) = (((id - ID_MOVE) / 2) as usize, if (id - ID_MOVE) % 2 == 0 { -1 } else { 1 });
+        let hwnd = UI.with_borrow_mut(|ui| {
+            let ui = ui.as_mut()?;
+            if let Some(Item::Movable(.., mover)) = ui.sections[ui.current].items.get(index) {
+                mover(index, dir);
+            }
+            ui.sections = SECTIONS.get()?();
+            Some(ui.hwnd)
+        });
+        if let Some(hwnd) = hwnd {
+            build_section(hwnd);
+            changed();
+        }
+        return;
+    }
     if id == ID_LIST && code == LBN_SELCHANGE {
         let sel = unsafe { SendMessageW(control, LB_GETCURSEL, None, None) }.0;
         let hwnd = UI.with_borrow_mut(|ui| {
@@ -314,7 +341,7 @@ fn on_command(id: i32, code: u32, control: HWND) {
         let item = ui.sections[ui.current].items.get((id - ID_ITEM) as usize)?;
         unsafe {
             match item {
-                Item::Check(key, ..) if code == BN_CLICKED as u32 => {
+                Item::Check(key, ..) | Item::Movable(key, ..) if code == BN_CLICKED as u32 => {
                     set_dword(key, (SendMessageW(control, BM_GETCHECK, None, None).0 == 1) as u32);
                 }
                 Item::Choice(key, ..) if code == CBN_SELCHANGE => {

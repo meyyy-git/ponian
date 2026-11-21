@@ -67,6 +67,7 @@ pub const WM_APP_AUDIODEV: u32 = WM_APP + 11;
 pub const WM_APP_ONLINE: u32 = WM_APP + 12;
 pub const WM_APP_OCR: u32 = WM_APP + 14;
 pub const WM_APP_PICK: u32 = WM_APP + 15;
+const WM_APP_APPMENU: u32 = WM_APP + 16;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const PBT_POWERSETTINGCHANGE: u32 = 0x8013;
 pub const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 5;
@@ -799,9 +800,8 @@ impl App {
                     let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
                     let (x, y) = (dip(lp.0), dip(lp.0 >> 16));
                     if let Some(&(_, Action::AppOpen(i))) = self.buttons.iter().rev().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]) {
-                        self.remove_app(i);
-                        self.hot = None;
-                        self.update();
+                        // menu dibuka dari wndproc, di luar peminjaman state app
+                        let _ = PostMessageW(Some(self.hwnd), WM_APP_APPMENU, WPARAM(i), LPARAM(0));
                     }
                 }
                 WM_CLIPBOARDUPDATE => self.on_clipboard(),
@@ -943,6 +943,23 @@ fn battery_ring(g: &Gfx, cx: f32, cy: f32, rad: f32, plugged: bool, pct: u8) {
     }
 }
 
+/// Menu klik kanan untuk satu pintasan aplikasi; mengembalikan perintah yang dipilih (0 kalau batal).
+fn app_menu(hwnd: HWND) -> i32 {
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return 0 };
+        for (id, label) in [(1usize, w!("Ganti nama\u{2026}")), (2, w!("Geser ke kiri")), (3, w!("Geser ke kanan")), (4, w!("Hapus"))] {
+            let _ = AppendMenuW(menu, MF_STRING, id, label);
+        }
+        let mut p = POINT::default();
+        let _ = GetCursorPos(&mut p);
+        // tanpa ini menu tidak menutup saat user klik di luar
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, None, hwnd, None);
+        let _ = DestroyMenu(menu);
+        cmd.0
+    }
+}
+
 /// Lebar deretan titik halaman: satu titik aktif memanjang, sisanya bulat.
 fn dots_width(n: usize) -> f32 {
     14.0 + (n.saturating_sub(1)) as f32 * (3.0 + 5.0)
@@ -997,8 +1014,9 @@ fn monitors() -> Vec<(HMONITOR, RECT, bool)> {
 
 /// Isi jendela Pengaturan. Tiap fitur menambahkan bagiannya di sini.
 fn sections() -> Vec<Section> {
-    let mut page_items: Vec<Item> = pages::ALL.iter().map(|p| Item::Check(p.key(), p.title(), true)).collect();
-    page_items.insert(0, Item::Note("Halaman yang tampil saat notch dibuka. Gulir roda mouse atau klik panah untuk berpindah."));
+    // halaman dulu (indeksnya dipakai tombol naik/turun), keterangan di akhir
+    let mut page_items: Vec<Item> = pages::ordered().into_iter().map(|p| Item::Movable(p.key(), p.title(), true, pages::move_page)).collect();
+    page_items.push(Item::Note("Centang untuk menampilkan halaman; tombol panah mengubah urutannya di notch."));
     vec![
         Section {
             name: "Umum",
@@ -1148,6 +1166,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             // klik pada notch tidak boleh mengambil fokus dari app yang sedang dipakai
             WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+            WM_APP_APPMENU => {
+                let cmd = app_menu(hwnd);
+                APP.with_borrow_mut(|a| {
+                    if let Some(a) = a {
+                        a.app_command(wp.0, cmd);
+                        a.update();
+                    }
+                });
+                return LRESULT(0);
+            }
             WM_APP_PICK => {
                 // dialog menjalankan message loop sendiri, jadi state app tidak boleh sedang dipinjam
                 if let Some(path) = apps::pick(hwnd) {

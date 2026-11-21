@@ -27,7 +27,7 @@ pub enum Page {
     Prayer,
 }
 
-// shortcut: urutan halaman tetap mengikuti daftar ini; user hanya bisa menyalakan atau mematikan.
+// urutan bawaan; urutan pilihan user disimpan di setting "Page.Order"
 pub const ALL: [Page; 9] = [Page::Music, Page::Apps, Page::Timer, Page::Shelf, Page::Todo, Page::Calendar, Page::Today, Page::Widgets, Page::Prayer];
 
 impl Page {
@@ -90,9 +90,32 @@ impl Page {
     }
 }
 
-/// Halaman yang dinyalakan user, minimal satu.
+/// Semua halaman dalam urutan pilihan user (setting "Page.Order"); halaman yang belum tercatat di belakang.
+pub fn ordered() -> Vec<Page> {
+    let saved = crate::settings::string("Page.Order");
+    let mut pages: Vec<Page> = saved.split(',').filter_map(|k| ALL.into_iter().find(|p| p.key() == k.trim())).collect();
+    pages.dedup();
+    for p in ALL {
+        if !pages.contains(&p) {
+            pages.push(p);
+        }
+    }
+    pages
+}
+
+/// Geser halaman ke-`index` satu langkah (dir -1 = naik) dan simpan urutannya.
+pub fn move_page(index: usize, dir: i32) {
+    let mut pages = ordered();
+    let to = index as i32 + dir;
+    if index < pages.len() && to >= 0 && (to as usize) < pages.len() {
+        pages.swap(index, to as usize);
+        crate::settings::set_string("Page.Order", &pages.iter().map(|p| p.key()).collect::<Vec<_>>().join(","));
+    }
+}
+
+/// Halaman yang dinyalakan user dalam urutannya, minimal satu.
 pub fn enabled() -> Vec<Page> {
-    let pages: Vec<Page> = ALL.into_iter().filter(|p| crate::settings::flag(p.key(), true)).collect();
+    let pages: Vec<Page> = ordered().into_iter().filter(|p| crate::settings::flag(p.key(), true)).collect();
     if pages.is_empty() { vec![Page::Music] } else { pages }
 }
 

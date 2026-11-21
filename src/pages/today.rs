@@ -8,7 +8,7 @@ use crate::{
 pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R) {
     let now = clock::now();
     let w = (r - l - 16.0) / 3.0;
-    let col = |i: f32| [l + i * (w + 8.0), t, l + i * (w + 8.0) + w, t + 70.0];
+    let col = |i: f32| [l + i * (w + 8.0), t, l + i * (w + 8.0) + w, t + 60.0];
 
     let today_tasks: Vec<_> = app.tasks.iter().filter(|t| t.day == now.day || !t.done).collect();
     let done = today_tasks.iter().filter(|t| t.done).count();
@@ -27,6 +27,14 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R) {
         }
         None => "Jadwal salat: atur lokasi di Pengaturan".into(),
     };
-    g.text("Berikutnya", &g.f.small, [l, t + 78.0, l + 80.0, b], GRAY);
-    g.text(&line, &g.f.text, [l + 80.0, t + 78.0, r, b], WHITE);
+    g.text("Berikutnya", &g.f.small, [l, t + 66.0, l + 80.0, t + 86.0], GRAY);
+    g.text(&line, &g.f.text, [l + 80.0, t + 66.0, r, t + 86.0], WHITE);
+
+    let notice = app.notices.last().map_or("Belum ada".to_string(), |(n, at)| {
+        let ago = at.elapsed().as_secs() / 60;
+        let when = if ago == 0 { "baru saja".to_string() } else { format!("{} lalu", clock::span(ago as u32)) };
+        format!("{} \u{B7} {} \u{B7} {when}", n.app, if app.notify_preview { n.title.as_str() } else { "pesan baru" })
+    });
+    g.text("Notifikasi", &g.f.small, [l, t + 86.0, l + 80.0, b], GRAY);
+    g.text(&notice, &g.f.text, [l + 80.0, t + 86.0, r, b], WHITE);
 }

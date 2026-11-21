@@ -34,6 +34,7 @@ pub enum Msg {
     Toggle,
     Next,
     Pause,
+    Net,
     Lyrics(String, Option<Arc<Vec<Line>>>),
     AudioDevice,
 }
@@ -86,6 +87,12 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
     let mut volume = volume::Watch::new(hwnd, &tx).ok();
     let manager = Manager::RequestAsync()?.join()?;
     manager.CurrentSessionChanged(&ping!(tx))?;
+    let net_tx = tx.clone();
+    let _ = windows::Networking::Connectivity::NetworkInformation::NetworkStatusChanged(&windows::Networking::Connectivity::NetworkStatusChangedEventHandler::new(move |_| {
+        let _ = net_tx.send(Msg::Net);
+        Ok(())
+    }));
+    let _ = tx.send(Msg::Net);
     let mut session: Option<Session> = None;
     let mut cache = Cache::new();
     let _ = tx.send(Msg::Refresh);
@@ -101,7 +108,14 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
             Msg::AudioDevice => {
                 if let Some(v) = &mut volume {
                     v.rebind(hwnd);
+                    *crate::system::AUDIO_DEVICE.lock().unwrap() = v.device_name();
+                    let _ = unsafe { PostMessageW(Some(HWND(hwnd as _)), crate::WM_APP_AUDIODEV, WPARAM(0), LPARAM(0)) };
                 }
+                continue;
+            }
+            Msg::Net => {
+                *crate::system::NETWORK.lock().unwrap() = Some(crate::system::network());
+                let _ = unsafe { PostMessageW(Some(HWND(hwnd as _)), crate::WM_APP_NET, WPARAM(0), LPARAM(0)) };
                 continue;
             }
         }

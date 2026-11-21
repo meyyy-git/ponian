@@ -2,9 +2,10 @@
 use crate::{
     Action, Alert, App, Hud, clock, input, location,
     media::Msg,
+    notify,
     pages::Page,
     pomodoro::{Durations, Phase},
-    prayer, settings, store,
+    prayer, settings, shelf, store, system,
     todo::{self, Task},
     water,
 };
@@ -49,6 +50,7 @@ impl App {
             until: 17 + settings::dword("Water.Until", 4).min(7),
         };
         self.sound = settings::flag("Sound", true);
+        self.notify_preview = settings::flag("Notify.Preview", false);
         self.widgets = (settings::dword("Widget.Left", 0) as usize, settings::dword("Widget.Right", 1) as usize);
         self.cities = (settings::dword("Clock.City1", 5) as usize, settings::dword("Clock.City2", 10) as usize);
         self.compute_prayer();
@@ -79,6 +81,108 @@ impl App {
         self.show_hud_for(Hud::Alert, 30_000);
     }
 
+    /// Popup singkat tanpa bunyi (Wi-Fi, perangkat audio, notifikasi, baterai).
+    pub fn info(&mut self, icon: &'static str, text: String, ms: u32) {
+        if self.hud == Some(Hud::Alert) {
+            return;
+        }
+        self.alert = Some(Alert { icon, text, task: None });
+        self.show_hud_for(Hud::Info, ms);
+    }
+
+    pub fn on_clipboard(&mut self) {
+        if !settings::flag("Clip.On", true) {
+            return;
+        }
+        if let Some(text) = shelf::read_text(self.hwnd) {
+            let limit = [5, 10, 20, 50][(settings::dword("Clip.Limit", 1) as usize).min(3)];
+            shelf::remember(&mut self.clips, text, limit);
+            shelf::save_clips(&self.clips);
+        }
+    }
+
+    /// state: 1 = file sedang diseret di atas notch, 0 = keluar, 2 = dijatuhkan
+    pub fn on_drag(&mut self, state: usize) {
+        self.dragging = state == 1;
+        if state == 1 {
+            self.page = self.pages.iter().position(|p| *p == Page::Shelf).unwrap_or(self.page);
+        }
+        if state == 2 {
+            let dropped: Vec<String> = std::mem::take(&mut *shelf::DROPPED.lock().unwrap());
+            for f in dropped {
+                if !self.files.contains(&f) {
+                    self.files.insert(0, f);
+                }
+            }
+            shelf::save_files(&self.files);
+        }
+    }
+
+    pub fn on_notify(&mut self) {
+        let fresh: Vec<_> = std::mem::take(&mut *notify::QUEUE.lock().unwrap());
+        let Some(last) = fresh.last().cloned() else { return };
+        for n in fresh {
+            self.notices.push((n, Instant::now()));
+        }
+        let excess = self.notices.len().saturating_sub(20);
+        self.notices.drain(..excess);
+        let text = if self.notify_preview {
+            [last.app.as_str(), last.title.as_str(), last.body.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{B7} ")
+        } else {
+            format!("{} \u{B7} pesan baru", last.app)
+        };
+        self.info("\u{EA8F}", text, 6000);
+    }
+
+    pub fn on_battery(&mut self, plugged: bool, pct: u8) {
+        if !settings::flag("Popup.Battery", true) {
+            return;
+        }
+        // pita: 0 = normal, 1 = lemah, 2 = kritis, 3 = penuh saat dicas
+        let band = match (plugged, pct) {
+            (true, 100) => 3,
+            (false, p) if p <= 10 => 2,
+            (false, p) if p <= 20 => 1,
+            _ => 0,
+        };
+        if band != self.battery_band {
+            self.battery_band = band;
+            match band {
+                1 => self.alert("\u{EBA0}", format!("Baterai lemah ({pct}%) \u{B7} colokkan charger"), None),
+                2 => self.alert("\u{EBA0}", format!("Baterai kritis ({pct}%) \u{B7} colokkan sekarang"), None),
+                3 => self.info("\u{EBB5}", "Baterai penuh \u{B7} charger boleh dicabut".into(), 4000),
+                _ => {}
+            }
+        }
+    }
+
+    pub fn on_net(&mut self) {
+        let Some(now) = system::NETWORK.lock().unwrap().clone() else { return };
+        let before = self.net.replace(now.clone());
+        if before.is_none() || before.as_ref() == Some(&now) || !settings::flag("Popup.Wifi", true) {
+            return;
+        }
+        let text = if now.is_empty() { "Tidak ada koneksi internet".into() } else if now == "Ethernet" { "Terhubung lewat kabel".into() } else { format!("Terhubung ke Wi-Fi {now}") };
+        self.info(if now.is_empty() { "\u{EB5E}" } else { "\u{E701}" }, text, 4000);
+    }
+
+    pub fn on_audio_device(&mut self) {
+        let name = system::AUDIO_DEVICE.lock().unwrap().clone();
+        if !name.is_empty() && settings::flag("Popup.Audio", true) {
+            self.info("\u{E7F6}", format!("Audio: {name}"), 4000);
+        }
+    }
+
+    /// Dipanggil tiap detik: munculkan HUD saat bahasa input berganti di jendela yang sama.
+    pub fn check_layout(&mut self) {
+        let (window, layout) = system::input_layout();
+        let (old_window, old_layout) = self.layout;
+        self.layout = (window, layout);
+        if window == old_window && layout != old_layout && old_layout != 0 && settings::flag("Hud.Lang", true) {
+            self.show_hud(Hud::Lang(layout));
+        }
+    }
+
     fn save_tasks(&self) {
         store::write("tasks.txt", &todo::save(&self.tasks));
     }
@@ -88,6 +192,10 @@ impl App {
         self.tasks = todo::load(&store::read("tasks.txt"));
         todo::cleanup(&mut self.tasks, self.today);
         self.water = store::daily_get("water.txt", self.today);
+        // pengingat minum pertama baru datang 45 menit setelah Ponian dibuka, bukan langsung
+        self.water_reminded = clock::now().min;
+        self.files = shelf::load_files();
+        self.clips = shelf::load_clips();
     }
 
     /// Dijalankan tiap ganti menit: pergantian hari, pengingat tugas, minum air, dan waktu salat.
@@ -189,6 +297,23 @@ impl App {
                 }
                 self.save_tasks();
                 self.hud = None;
+            }
+            Action::ShelfOpen(i) => {
+                if let Some(f) = self.files.get(i) {
+                    shelf::open(f);
+                }
+            }
+            Action::ShelfRemove(i) => {
+                if i < self.files.len() {
+                    self.files.remove(i);
+                    shelf::save_files(&self.files);
+                }
+            }
+            Action::ClipCopy(i) => {
+                if let Some(text) = self.clips.get(i).cloned() {
+                    shelf::write_text(self.hwnd, &text);
+                    self.info("\u{E8C8}", "Disalin ke clipboard".into(), 1500);
+                }
             }
         }
     }

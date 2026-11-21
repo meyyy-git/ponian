@@ -8,14 +8,17 @@ mod input;
 mod location;
 mod lyrics;
 mod media;
+mod notify;
 mod pages;
 mod pomodoro;
 mod power;
 mod prayer;
 mod render;
 mod settings;
+mod shelf;
 mod state;
 mod store;
+mod system;
 mod todo;
 mod tray;
 mod volume;
@@ -51,6 +54,13 @@ use windows::{
 pub const WM_APP_MEDIA: u32 = WM_APP + 1;
 pub const WM_APP_VOLUME: u32 = WM_APP + 2;
 pub const WM_APP_TRAY: u32 = WM_APP + 3;
+pub const WM_APP_DRAG: u32 = WM_APP + 6;
+pub const WM_APP_CAPS: u32 = WM_APP + 7;
+pub const WM_APP_NOTIFY: u32 = WM_APP + 8;
+pub const WM_APP_NET: u32 = WM_APP + 9;
+pub const WM_APP_AUDIODEV: u32 = WM_APP + 11;
+const WM_CLIPBOARDUPDATE: u32 = 0x031D;
+const PBT_POWERSETTINGCHANGE: u32 = 0x8013;
 const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 5;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_MOUSEHWHEEL: u32 = 0x020E;
@@ -78,6 +88,11 @@ enum Hud {
     Power(bool, u8),
     Track,
     Alert,
+    /// popup singkat yang memakai data `alert`
+    Info,
+    Brightness(u32),
+    Caps(bool),
+    Lang(isize),
 }
 
 /// Peringatan yang tetap tampil sampai diklik (pengingat tugas, minum air, waktu salat).
@@ -102,6 +117,9 @@ pub enum Action {
     WaterAdd,
     WaterUndo,
     Snooze,
+    ShelfOpen(usize),
+    ShelfRemove(usize),
+    ClipCopy(usize),
 }
 
 pub struct App {
@@ -127,6 +145,18 @@ pub struct App {
     widgets: (usize, usize),
     cities: (usize, usize),
     sound: bool,
+    files: Vec<String>,
+    clips: Vec<String>,
+    /// file sedang diseret di atas notch
+    dragging: bool,
+    /// posisi tombol mouse ditekan di atas file Shelf, untuk mulai menyeret keluar
+    press: Option<(f32, f32, usize)>,
+    brightness_ready: bool,
+    layout: (isize, isize),
+    battery_band: u8,
+    net: Option<String>,
+    notices: Vec<(notify::Notice, Instant)>,
+    notify_preview: bool,
     hud: Option<Hud>,
     plugged: Option<bool>,
     inside: bool,
@@ -197,7 +227,8 @@ impl App {
                 let w = if m.lyrics.is_some() { 360.0 } else { 280.0 } + if self.pomo_remaining().is_some() { 54.0 } else { 0.0 };
                 (w + peek.0, IDLE.1 + peek.1)
             }
-            View::Hud if self.hud == Some(Hud::Alert) => (380.0, 38.0),
+            View::Hud if matches!(self.hud, Some(Hud::Alert | Hud::Info)) => (380.0, 38.0),
+            View::Hud if matches!(self.hud, Some(Hud::Caps(_) | Hud::Lang(_))) => (220.0, 34.0),
             View::Hud => (300.0, 34.0),
             View::Expanded => EXPANDED,
         }
@@ -209,7 +240,7 @@ impl App {
         let view = state::view(Inputs {
             hidden: self.user_hidden || self.fullscreen,
             // kotak teks yang terbuka menahan notch tetap terbuka
-            hover: self.hover || input::is_open(),
+            hover: self.hover || input::is_open() || self.dragging,
             ringing: self.ringing(),
             hud: self.hud.is_some(),
             playing,
@@ -336,6 +367,26 @@ impl App {
                     g.text(&track, &g.f.center, [x0 + 34.0, 0.0, x1 - 34.0, h], WHITE);
                     wave(g, x1 - 22.0, h / 2.0);
                 }
+                Some(Hud::Brightness(pct)) => {
+                    g.text("\u{E706}", &g.f.icon, [x0 + 14.0, 0.0, x0 + 44.0, h], WHITE);
+                    let (b0, b1) = (x0 + 50.0, x1 - 60.0);
+                    g.rrect([b0, h / 2.0 - 2.0, b1, h / 2.0 + 2.0], 2.0, 0x3a3a3a);
+                    g.rrect([b0, h / 2.0 - 2.0, b0 + (b1 - b0) * pct.min(100) as f32 / 100.0, h / 2.0 + 2.0], 2.0, WHITE);
+                    g.text(&format!("{pct}%"), &g.f.csmall, [x1 - 56.0, 0.0, x1 - 14.0, h], WHITE);
+                }
+                Some(Hud::Caps(on)) => {
+                    g.text("\u{E84A}", &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], if on { ACCENT } else { GRAY });
+                    g.text(if on { "Caps Lock nyala" } else { "Caps Lock mati" }, &g.f.text, [x0 + 44.0, 0.0, x1 - 12.0, h], WHITE);
+                }
+                Some(Hud::Lang(layout)) => {
+                    g.text("\u{E8C1}", &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], ACCENT);
+                    g.text(&system::layout_name(layout), &g.f.text, [x0 + 44.0, 0.0, x1 - 12.0, h], WHITE);
+                }
+                Some(Hud::Info) => {
+                    let Some(a) = &self.alert else { return };
+                    g.text(a.icon, &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], ACCENT);
+                    g.text(&a.text, &g.f.text, [x0 + 44.0, 0.0, x1 - 16.0, h], WHITE);
+                }
                 Some(Hud::Alert) => {
                     let Some(a) = &self.alert else { return };
                     g.text(a.icon, &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], ACCENT);
@@ -386,7 +437,7 @@ impl App {
         // saat Pomodoro berbunyi, klik di mana pun pada notch pindah ke fase berikutnya
         if self.ringing() {
             self.pomo.toggle(Instant::now(), self.durations);
-        } else if self.view == View::Hud && self.hud == Some(Hud::Alert) && !matches!(hit, Some(Action::Snooze)) {
+        } else if self.view == View::Hud && matches!(self.hud, Some(Hud::Alert | Hud::Info)) && !matches!(hit, Some(Action::Snooze)) {
             // klik pada peringatan berarti sudah dibaca
             (self.alert, self.hud) = (None, None);
         } else if let Some(action) = hit {
@@ -434,9 +485,50 @@ impl App {
                     let _ = KillTimer(Some(self.hwnd), T_HOVER);
                     self.update();
                 }
+                // menahan tombol di atas file Shelf lalu bergerak = menyeret file keluar
+                WM_MOUSEMOVE if (wp.0 & 1) != 0 => {
+                    let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
+                    let (x, y) = (dip(lp.0), dip(lp.0 >> 16));
+                    if let Some((px, py, i)) = self.press
+                        && ((x - px).powi(2) + (y - py).powi(2)) > 36.0
+                    {
+                        self.press = None;
+                        if let Some(path) = self.files.get(i).cloned() {
+                            shelf::drag_out(&path);
+                        }
+                    }
+                }
+                WM_LBUTTONDOWN => {
+                    let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
+                    let (x, y) = (dip(lp.0), dip(lp.0 >> 16));
+                    self.press = self.buttons.iter().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]).and_then(|b| match b.1 {
+                        Action::ShelfOpen(i) => Some((x, y, i)),
+                        _ => None,
+                    });
+                }
+                // setelah menyeret, DoDragDrop sudah memakan pelepasan tombol, jadi pesan ini hanya datang untuk klik biasa
                 WM_LBUTTONUP => {
                     let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
+                    self.press = None;
                     self.click(dip(lp.0), dip(lp.0 >> 16));
+                }
+                WM_CLIPBOARDUPDATE => self.on_clipboard(),
+                WM_APP_DRAG => {
+                    self.on_drag(wp.0);
+                    self.update();
+                }
+                WM_APP_CAPS if settings::flag("Hud.Caps", true) => self.show_hud(Hud::Caps(system::caps_on())),
+                WM_APP_NOTIFY => self.on_notify(),
+                WM_APP_NET => self.on_net(),
+                WM_APP_AUDIODEV => self.on_audio_device(),
+                WM_POWERBROADCAST if wp.0 as u32 == PBT_POWERSETTINGCHANGE => {
+                    // pemberitahuan pertama datang saat didaftarkan, bukan karena user mengubah kecerahan
+                    if let Some(pct) = system::brightness(lp) {
+                        if self.brightness_ready && settings::flag("Hud.Brightness", true) {
+                            self.show_hud(Hud::Brightness(pct));
+                        }
+                        self.brightness_ready = true;
+                    }
                 }
                 WM_MOUSEWHEEL | WM_MOUSEHWHEEL if self.view == View::Expanded => {
                     let delta = (wp.0 >> 16) as i16;
@@ -459,6 +551,7 @@ impl App {
                         let minute = GetLocalTime().wMinute;
                         let new_minute = minute != self.minute;
                         self.minute = minute;
+                        self.check_layout();
                         if new_minute {
                             self.minute_jobs();
                         }
@@ -493,12 +586,16 @@ impl App {
                         self.update();
                     }
                 }
-                WM_APP_VOLUME => self.show_hud(Hud::Volume),
+                WM_APP_VOLUME if settings::flag("Hud.Volume", true) => self.show_hud(Hud::Volume),
                 WM_POWERBROADCAST if wp.0 as u32 == PBT_APMPOWERSTATUSCHANGE => {
                     // pesan ini juga datang tiap persen berubah; HUD hanya saat charger dicolok atau dicabut
                     match power::status() {
                         Some((plugged, pct)) if self.plugged.replace(plugged) != Some(plugged) => self.show_hud(Hud::Power(plugged, pct)),
-                        _ => self.draw(),
+                        Some((plugged, pct)) => {
+                            self.on_battery(plugged, pct);
+                            self.draw();
+                        }
+                        None => self.draw(),
                     }
                 }
                 input::WM_APP_INPUT => {
@@ -639,6 +736,38 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
+            name: "Sistem",
+            items: vec![
+                Item::Note("Indikator yang muncul di notch:"),
+                Item::Check("Hud.Volume", "Volume", true),
+                Item::Check("Hud.Brightness", "Kecerahan layar", true),
+                Item::Check("Hud.Caps", "Caps Lock", true),
+                Item::Check("Hud.Lang", "Bahasa input", true),
+                Item::Note("Popup:"),
+                Item::Check("Popup.Battery", "Baterai lemah, kritis, dan penuh", true),
+                Item::Check("Popup.Wifi", "Wi-Fi tersambung atau terputus", true),
+                Item::Check("Popup.Audio", "Perangkat audio berganti (headset Bluetooth, speaker)", true),
+            ],
+        },
+        Section {
+            name: "Notifikasi",
+            items: vec![
+                Item::Check("Notify.On", "Tampilkan notifikasi app di notch", true),
+                Item::Check("Notify.Preview", "Tampilkan isi pesan", false),
+                Item::Note("Kalau isi pesan dimatikan, notch hanya menampilkan nama app. Notifikasi dibaca di komputer ini dan tidak dikirim ke mana pun."),
+            ],
+        },
+        Section {
+            name: "Shelf",
+            items: vec![
+                Item::Check("Shelf.Clear", "Kosongkan Shelf setiap Ponian dibuka", true),
+                Item::Check("Clip.On", "Simpan riwayat clipboard (teks yang Anda salin)", true),
+                Item::Choice("Clip.Limit", "Jumlah riwayat clipboard", || opts(&["5", "10", "20", "50"]), 1),
+                Item::Check("Clip.Keep", "Ingat riwayat clipboard setelah Ponian ditutup", false),
+                Item::Note("Teks dari password manager yang menandai isinya rahasia tidak ikut disimpan."),
+            ],
+        },
+        Section {
             name: "Widget",
             items: vec![
                 Item::Choice("Widget.Left", "Widget kiri", pages::widgets::names, 0),
@@ -767,6 +896,16 @@ fn main() -> Result<()> {
             widgets: (0, 1),
             cities: (5, 10),
             sound: true,
+            files: Vec::new(),
+            clips: Vec::new(),
+            dragging: false,
+            press: None,
+            brightness_ready: false,
+            layout: (0, 0),
+            battery_band: 0,
+            net: None,
+            notices: Vec::new(),
+            notify_preview: false,
             hud: None,
             plugged: power::status().map(|s| s.0),
             inside: false,
@@ -794,6 +933,9 @@ fn main() -> Result<()> {
         app.reload();
         app.minute_jobs();
         location::refresh(hwnd.0 as isize);
+        shelf::register(hwnd);
+        system::register(hwnd);
+        notify::spawn(hwnd.0 as isize);
         app.update();
         APP.set(Some(app));
         if open_settings {

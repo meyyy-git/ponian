@@ -7,9 +7,10 @@ use std::sync::{
 };
 use windows::{
     Win32::{
+        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
         Foundation::{HWND, LPARAM, PROPERTYKEY, WPARAM},
         Media::Audio::{Endpoints::*, *},
-        System::Com::{CLSCTX_ALL, CoCreateInstance},
+        System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, STGM_READ, StructuredStorage::PropVariantToStringAlloc},
         UI::WindowsAndMessaging::PostMessageW,
     },
     core::*,
@@ -73,6 +74,21 @@ impl Watch {
             let mut w = Self { devices, on_device, endpoint: None };
             w.rebind(hwnd);
             Ok(w)
+        }
+    }
+
+    /// Nama perangkat output default, misalnya "Headphones (Galaxy Buds)".
+    pub fn device_name(&self) -> String {
+        unsafe {
+            (|| -> Result<String> {
+                let store = self.devices.GetDefaultAudioEndpoint(eRender, eMultimedia)?.OpenPropertyStore(STGM_READ)?;
+                let value = store.GetValue(&PKEY_Device_FriendlyName)?;
+                let s = PropVariantToStringAlloc(&value)?;
+                let name = s.to_string().unwrap_or_default();
+                CoTaskMemFree(Some(s.0 as _));
+                Ok(name)
+            })()
+            .unwrap_or_default()
         }
     }
 

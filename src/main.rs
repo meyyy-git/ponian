@@ -15,7 +15,6 @@ mod notify;
 mod ocr;
 mod online;
 mod pages;
-mod pomodoro;
 mod power;
 mod prayer;
 mod render;
@@ -24,17 +23,16 @@ mod shelf;
 mod state;
 mod store;
 mod system;
+mod timer;
 mod todo;
 mod tray;
 mod volume;
-mod water;
 mod weather;
 mod worldclock;
 
-use features::WaterCfg;
 use media::{Media, Msg};
 use pages::Page;
-use pomodoro::{Durations, Pomo, Run};
+use timer::{Run, Timer};
 use render::{ACCENT, CHIP, DIM, GRAY, GREEN, Gfx, R, TRACK, WHITE};
 use settings::{Item, Section, opts};
 use state::{Inputs, View};
@@ -86,6 +84,12 @@ const HOVER_MS: u32 = 240;
 const FADE_SECS: f32 = 0.22;
 /// jarak antar-frame ikon audio saat musik berjalan
 const AMBIENT_MS: u32 = 50;
+/// lama geser antarhalaman
+const SLIDE_SECS: f32 = 0.34;
+/// lama titik halaman berubah menjadi deretan ikon
+const DOTS_SECS: f32 = 0.18;
+/// lebar satu ikon di deretan ikon halaman
+const ICON_CELL: f32 = 28.0;
 
 const T_TICK: usize = 2;
 const T_POLL: usize = 3;
@@ -133,19 +137,21 @@ pub enum Action {
     Seek { x0: f32, x1: f32 },
     Mute,
     LyricsToggle,
-    WaterToggle,
     OpenSettings,
     ShelfTab(u8),
     Page(usize),
     PrevPage,
     NextPage,
-    PomoToggle,
-    PomoReset,
+    TimerToggle,
+    TimerReset,
+    TimerSet(u64),
+    /// geser kalender sekian bulan
+    CalMove(i32),
+    CalToday,
+    CalDay(i64),
     TodoAdd,
     TodoToggle(usize),
     TodoDelete(usize),
-    WaterAdd,
-    WaterUndo,
     Snooze,
     ShelfOpen(usize),
     ShelfRemove(usize),
@@ -159,14 +165,9 @@ pub struct App {
     tx: Sender<Msg>,
     media: Media,
     last_track: String,
-    pomo: Pomo,
-    durations: Durations,
+    timer: Timer,
     tasks: Vec<todo::Task>,
     today: i64,
-    water: u32,
-    water_cfg: WaterCfg,
-    /// menit terakhir pengingat minum air hari ini
-    water_reminded: u32,
     /// menit sejak tengah malam untuk tiap waktu salat hari ini
     prayer: Option<[u32; 6]>,
     prayer_info: String,
@@ -183,12 +184,21 @@ pub struct App {
     press: Option<(f32, f32, usize)>,
     /// tab halaman Shelf: 0 = File, 1 = Clipboard
     shelf_tab: u8,
+    /// kalender: jarak bulan yang ditampilkan dari bulan ini, hari yang dipilih, dan awal minggu
+    cal_offset: i32,
+    cal_day: Option<i64>,
+    week_monday: bool,
+    /// perpindahan halaman yang sedang berjalan: (halaman asal, arah, mulai)
+    slide: Option<(Page, f32, Instant)>,
+    /// titik halaman sedang di-hover; `dots_from` dan `dots_since` untuk transisinya
+    dots_open: bool,
+    dots_from: f32,
+    dots_since: Option<Instant>,
     /// salinan setting dan data yang dipakai saat menggambar, supaya tiap frame tidak membaca registry atau file
     lyrics_on: bool,
     countdown: String,
     rates_main: usize,
     snooze: u32,
-    focus_log: Vec<(i64, u32)>,
     /// baris lirik yang tampil, baris sebelumnya, dan kapan pergantiannya dimulai
     lyric_idx: Option<usize>,
     lyric_cur: String,
@@ -229,12 +239,12 @@ thread_local! {
 
 impl App {
     fn ringing(&self) -> bool {
-        self.pomo.run == Run::Ringing
+        self.timer.run == Run::Ringing
     }
 
-    /// Sisa waktu Pomodoro untuk pill kecil, selama sedang berjalan atau dijeda.
-    fn pomo_remaining(&self) -> Option<String> {
-        matches!(self.pomo.run, Run::Running(_) | Run::Paused(_)).then(|| state::mmss(self.pomo.remaining(Instant::now(), self.durations)))
+    /// Sisa waktu timer untuk pill kecil, selama sedang berjalan atau dijeda.
+    fn timer_remaining(&self) -> Option<String> {
+        matches!(self.timer.run, Run::Running(_) | Run::Paused(_)).then(|| state::mmss(self.timer.remaining(Instant::now())))
     }
 
     /// Posisi putar untuk lirik, sudah dimajukan sesuai setting "Majukan lirik".
@@ -288,13 +298,17 @@ impl App {
         });
         let to = self.target(view);
         unsafe {
+            if view != View::Expanded {
+                // deretan ikon dan geser halaman hanya ada di panel terbuka
+                (self.dots_open, self.dots_since, self.slide) = (false, None, None);
+            }
             if view != self.view || to != self.to {
                 self.fade = view != self.view;
                 (self.view, self.from, self.to) = (view, self.cur, to);
                 self.anim_start = Some(Instant::now());
             }
             // selama musik berjalan: ikon audio, baris lirik, dan batang progres ikut bergerak
-            let need_tick = self.pomo.running() || self.ringing() || playing;
+            let need_tick = self.timer.running() || self.ringing() || playing;
             if need_tick != self.ticking {
                 self.ticking = need_tick;
                 if need_tick {
@@ -337,6 +351,12 @@ impl App {
         if self.lyric_since.is_some_and(|s| s.elapsed().as_secs_f32() >= LYRIC_SECS) {
             self.lyric_since = None;
         }
+        if self.slide.is_some_and(|s| s.2.elapsed().as_secs_f32() >= SLIDE_SECS) {
+            self.slide = None;
+        }
+        if self.dots_since.is_some_and(|s| s.elapsed().as_secs_f32() >= DOTS_SECS) {
+            self.dots_since = None;
+        }
 
         let mut buttons = Vec::new();
         let (w, h) = self.cur;
@@ -367,7 +387,7 @@ impl App {
 
     /// Apa yang sedang bergerak, untuk menentukan seberapa sering frame digambar.
     fn motion(&self) -> Motion {
-        if self.anim_start.is_some() || self.lyric_since.is_some() {
+        if self.anim_start.is_some() || self.lyric_since.is_some() || self.slide.is_some() || self.dots_since.is_some() {
             Motion::Transition
         } else if self.media.session && self.media.playing && matches!(self.view, View::Idle | View::Expanded) {
             // ikon audio dan batang progres
@@ -424,8 +444,8 @@ impl App {
     fn content(&self, cx: f32, buttons: &mut Vec<(R, Action)>) {
         let (g, m) = (&self.gfx, &self.media);
         let (x0, x1, h) = (cx - self.to.0 / 2.0, cx + self.to.0 / 2.0, self.to.1);
-        let remaining = self.pomo_remaining();
-        let battery = power::status();
+        let remaining = self.timer_remaining();
+        let charge = power::status();
         let playing = m.session && m.playing;
         let tint = m.art.as_ref().map_or(GRAY, |a| a.tint);
         // batang level untuk HUD volume dan kecerahan
@@ -439,9 +459,9 @@ impl App {
         };
 
         match self.view {
-            // pill diam: cincin baterai, jam (atau sisa Pomodoro), ikon audio
+            // pill diam: cincin baterai, jam (atau sisa timer), ikon audio
             View::Idle => {
-                if let Some((plugged, pct)) = battery {
+                if let Some((plugged, pct)) = charge {
                     battery_ring(g, x0 + 18.0, h / 2.0, 7.0, plugged, pct);
                 }
                 match &remaining {
@@ -509,28 +529,44 @@ impl App {
                 None => {}
             },
             View::Expanded => {
-                // baris status di tengah-atas: cincin baterai, tanggal, jam; ikon audio di kanan
+                // halaman beserta judulnya; saat berpindah, halaman lama keluar dan yang baru masuk dari sisi sebaliknya
                 let page = self.current_page();
+                let draw_page = |page: Page, dx: f32, buttons: &mut Vec<(R, Action)>| {
+                    if page != Page::Music {
+                        g.text(page.title(), &g.f.bold, [x0 + 32.0 + dx, 21.0, x0 + 124.0 + dx, 43.0], WHITE);
+                    }
+                    page.draw(self, g, [x0 + 32.0 + dx, 50.0, x1 - 32.0 + dx, 152.0], buttons);
+                };
+                g.clip([x0 + 24.0, 0.0, x1 - 24.0, 156.0]);
+                match self.slide {
+                    Some((from, dir, start)) => {
+                        let t = (start.elapsed().as_secs_f32() / SLIDE_SECS).min(1.0);
+                        let e = 1.0 - (1.0 - t).powi(3);
+                        let span = self.to.0 - 48.0;
+                        // tombol halaman yang sedang keluar tidak boleh bisa diklik
+                        draw_page(from, -dir * span * e, &mut Vec::new());
+                        draw_page(page, dir * span * (1.0 - e), buttons);
+                    }
+                    None => draw_page(page, 0.0, buttons),
+                }
+                g.unclip();
+
+                // baris status di tengah-atas: baterai, tanggal, jam; ikon audio di kanan
                 let c = unsafe { GetLocalTime() };
                 let date = state::date_id(c.wDayOfWeek, c.wDay, c.wMonth, c.wYear);
                 let (time, ampm) = clock::time_text();
-                let ring = if battery.is_some() { 24.0 } else { 0.0 };
+                let bw = if charge.is_some() { 24.0 } else { 0.0 };
                 let (dw, tw, aw) = (g.width(&date, &g.f.text), g.width(&time, &g.f.time), g.width(&ampm, &g.f.tiny));
-                let mut x = cx - (ring + dw + 9.0 + tw + 3.0 + aw) / 2.0;
-                if let Some((plugged, pct)) = battery {
+                let mut x = cx - (bw + dw + 9.0 + tw + 3.0 + aw) / 2.0;
+                if let Some((plugged, pct)) = charge {
                     battery_ring(g, x + 8.0, 27.0, 7.0, plugged, pct);
-                    x += ring;
+                    x += bw;
                 }
                 g.text(&date, &g.f.text, [x, 16.0, x + dw + 2.0, 38.0], 0xe8e8e8);
                 x += dw + 9.0;
                 g.text(&time, &g.f.time, [x, 16.0, x + tw + 2.0, 38.0], WHITE);
                 g.text(&ampm, &g.f.tiny, [x + tw + 3.0, 18.5, x + tw + 3.0 + aw + 2.0, 38.5], WHITE);
                 wave(g, x1 - 40.0, 27.0, playing.then(|| self.born.elapsed().as_secs_f32()));
-                if page != Page::Music {
-                    g.text(page.title(), &g.f.bold, [x0 + 32.0, 21.0, x0 + 124.0, 43.0], WHITE);
-                }
-
-                page.draw(self, g, [x0 + 32.0, 50.0, x1 - 32.0, 152.0], buttons);
 
                 let n = self.pages.len();
                 if n > 1 {
@@ -539,14 +575,38 @@ impl App {
                         g.text(glyph, &g.f.icon_small, btn, DIM);
                         buttons.push((btn, action));
                     }
-                    let widths: Vec<f32> = (0..n).map(|i| if i == self.page { 14.0 } else { 3.0 }).collect();
-                    let total = widths.iter().sum::<f32>() + 5.0 * (n - 1) as f32;
-                    let mut x = cx - total / 2.0;
-                    for (i, w) in widths.into_iter().enumerate() {
-                        g.rrect([x, 163.5, x + w, 166.5], 1.5, if i == self.page { WHITE } else { DIM });
-                        buttons.push(([x - 2.5, 157.0, x + w + 2.5, h], Action::Page(i)));
-                        x += w + 5.0;
+                    // titik halaman; saat di-hover berubah menjadi deretan ikon halaman
+                    let (p, k) = (self.dots_p(), g.alpha.get());
+                    if p < 1.0 {
+                        g.alpha.set(k * (1.0 - p));
+                        let mut x = cx - dots_width(n) / 2.0;
+                        for i in 0..n {
+                            let w = if i == self.page { 14.0 } else { 3.0 };
+                            g.rrect([x, 163.5, x + w, 166.5], 1.5, if i == self.page { WHITE } else { DIM });
+                            if p < 0.5 {
+                                buttons.push(([x - 2.5, 157.0, x + w + 2.5, h], Action::Page(i)));
+                            }
+                            x += w + 5.0;
+                        }
                     }
+                    if p > 0.0 {
+                        g.alpha.set(k * p);
+                        // latar tumbuh dari selebar titik-titik menjadi selebar deretan ikon
+                        let (w, hh, cy) = (dots_width(n) + 14.0 + (n as f32 * ICON_CELL - dots_width(n) - 6.0) * p, 9.0 + 17.0 * p, 165.0 - 9.0 * p);
+                        g.rrect([cx - w / 2.0, cy - hh / 2.0, cx + w / 2.0, cy + hh / 2.0], hh / 2.0, 0x1e1e1e);
+                        for (i, pg) in self.pages.iter().enumerate() {
+                            let x = cx + (i as f32 - n as f32 / 2.0) * ICON_CELL * (0.6 + 0.4 * p);
+                            let cell = [x + 2.0, cy - 11.0, x + ICON_CELL * (0.6 + 0.4 * p) - 2.0, cy + 11.0];
+                            if i == self.page {
+                                g.rrect(cell, 11.0, 0x3a2f6b);
+                            }
+                            g.text(pg.icon(), &g.f.icon_mid, cell, if i == self.page { WHITE } else { GRAY });
+                            if p >= 0.5 {
+                                buttons.push((cell, Action::Page(i)));
+                            }
+                        }
+                    }
+                    g.alpha.set(k);
                 }
             }
             View::Hidden => {}
@@ -554,10 +614,11 @@ impl App {
     }
 
     fn click(&mut self, x: f32, y: f32) {
-        let hit = self.buttons.iter().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]).map(|b| b.1);
-        // saat Pomodoro berbunyi, klik di mana pun pada notch pindah ke fase berikutnya
+        // elemen yang digambar belakangan berada di atas, jadi dicari dari belakang
+        let hit = self.buttons.iter().rev().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]).map(|b| b.1);
+        // saat timer berbunyi, klik di mana pun pada notch menghentikannya
         if self.ringing() {
-            self.pomo.toggle(Instant::now(), self.durations);
+            self.timer.toggle(Instant::now());
         } else if self.view == View::Hud && matches!(self.hud, Some(Hud::Alert | Hud::Info)) && !matches!(hit, Some(Action::Snooze)) {
             // klik pada peringatan berarti sudah dibaca
             (self.alert, self.hud) = (None, None);
@@ -569,12 +630,37 @@ impl App {
         self.update();
     }
 
-    /// Pindah halaman dengan isi yang muncul perlahan.
-    fn go(&mut self, page: usize) {
+    /// Pindah halaman dengan geser. `dir` 1.0 = halaman baru masuk dari kanan, -1.0 = dari kiri.
+    fn go(&mut self, page: usize, dir: f32) {
         if page != self.page && self.view == View::Expanded {
-            (self.fade, self.from, self.anim_start) = (true, self.cur, Some(Instant::now()));
+            self.slide = Some((self.current_page(), dir, Instant::now()));
         }
         self.page = page;
+    }
+
+    /// Seberapa jauh titik halaman sudah berubah menjadi deretan ikon (0 = titik, 1 = ikon).
+    fn dots_p(&self) -> f32 {
+        let target = if self.dots_open { 1.0 } else { 0.0 };
+        match self.dots_since {
+            Some(since) => {
+                let t = (since.elapsed().as_secs_f32() / DOTS_SECS).min(1.0);
+                self.dots_from + (target - self.dots_from) * (1.0 - (1.0 - t).powi(3))
+            }
+            None => target,
+        }
+    }
+
+    /// Kursor bergerak di panel terbuka: buka deretan ikon saat di atas titik halaman, tutup saat menjauh.
+    fn hover_dots(&mut self, x: f32, y: f32) {
+        let n = self.pages.len();
+        let cx = WIN.0 / 2.0;
+        // area deretan ikon lebih besar dari area titik, supaya tidak berkedip di tepinya
+        let (half, top) = if self.dots_open { (n as f32 * ICON_CELL / 2.0 + 14.0, 136.0) } else { (dots_width(n) / 2.0 + 14.0, 154.0) };
+        let over = n > 1 && self.view == View::Expanded && (x - cx).abs() <= half && y >= top;
+        if over != self.dots_open {
+            (self.dots_from, self.dots_open, self.dots_since) = (self.dots_p(), over, Some(Instant::now()));
+            self.draw();
+        }
     }
 
     /// Daftarkan shortcut dan beri tahu kalau ada yang bentrok dengan app lain.
@@ -586,7 +672,7 @@ impl App {
     }
 
     fn turn(&mut self, by: isize) {
-        self.go((self.page as isize + by).rem_euclid(self.pages.len() as isize) as usize);
+        self.go((self.page as isize + by).rem_euclid(self.pages.len() as isize) as usize, by.signum() as f32);
     }
 
     /// Sesuaikan posisi dan ukuran setelah setting, monitor, atau DPI berubah.
@@ -647,10 +733,14 @@ impl App {
                         }
                     }
                 }
+                WM_MOUSEMOVE => {
+                    let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
+                    self.hover_dots(dip(lp.0), dip(lp.0 >> 16));
+                }
                 WM_LBUTTONDOWN => {
                     let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
                     let (x, y) = (dip(lp.0), dip(lp.0 >> 16));
-                    self.press = self.buttons.iter().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]).and_then(|b| match b.1 {
+                    self.press = self.buttons.iter().rev().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]).and_then(|b| match b.1 {
                         Action::ShelfOpen(i) => Some((x, y, i)),
                         _ => None,
                     });
@@ -691,7 +781,7 @@ impl App {
                 }
                 WM_TIMER => match wp.0 {
                     T_TICK => {
-                        if self.pomo_tick() {
+                        if self.timer_tick() {
                             self.update();
                         } else if self.anim_start.is_none() && !matches!(self.view, View::Hidden | View::Compact) {
                             // pill lirik digambar ulang oleh T_LYRIC tepat saat barisnya berganti
@@ -787,13 +877,21 @@ impl App {
     }
 }
 
-/// Cincin baterai: hijau saat dicas, merah saat hampir habis, dengan ikon petir saat dicas.
+/// Cincin baterai: hijau saat dicas, merah saat hampir habis. Petir di tengahnya digambar sendiri
+/// (enam titik) supaya bentuknya tegas pada ukuran sekecil ini; glyph font ikonnya terlalu tipis.
 fn battery_ring(g: &Gfx, cx: f32, cy: f32, rad: f32, plugged: bool, pct: u8) {
     let color = if plugged { GREEN } else if pct <= 20 { 0xff453a } else { WHITE };
     g.ring(cx, cy, rad, 2.2, pct as f32 / 100.0, color, TRACK);
     if plugged {
-        g.text("\u{E945}", &g.f.icon_small, [cx - rad, cy - rad, cx + rad, cy + rad], color);
+        let s = rad * 0.62;
+        let bolt = [(0.22, -1.0), (-0.62, 0.14), (-0.06, 0.14), (-0.22, 1.0), (0.62, -0.14), (0.06, -0.14)];
+        g.poly(&bolt.map(|(x, y)| (cx + x * s, cy + y * s)), WHITE);
     }
+}
+
+/// Lebar deretan titik halaman: satu titik aktif memanjang, sisanya bulat.
+fn dots_width(n: usize) -> f32 {
+    14.0 + (n.saturating_sub(1)) as f32 * (3.0 + 5.0)
 }
 
 /// Ikon not musik di font ikon Windows.
@@ -878,12 +976,10 @@ fn sections() -> Vec<Section> {
         },
         Section { name: "Halaman", items: page_items },
         Section {
-            name: "Pomodoro",
+            name: "Timer",
             items: vec![
-                Item::Choice("Pomo.Focus", "Fokus", || opts(&["15 menit", "20 menit", "25 menit", "30 menit", "45 menit", "50 menit", "60 menit"]), 2),
-                Item::Choice("Pomo.Short", "Istirahat pendek", || opts(&["3 menit", "5 menit", "10 menit"]), 1),
-                Item::Choice("Pomo.Long", "Istirahat panjang", || opts(&["10 menit", "15 menit", "20 menit", "30 menit"]), 1),
-                Item::Check("Sound", "Bunyi untuk Pomodoro dan semua pengingat", true),
+                Item::Check("Sound", "Bunyi saat timer habis dan untuk semua pengingat", true),
+                Item::Note("Durasi timer dipilih langsung di halaman Timer."),
             ],
         },
         Section {
@@ -892,16 +988,6 @@ fn sections() -> Vec<Section> {
                 Item::Note("Tulis jam di awal atau akhir tugas untuk pengingat, misalnya \u{201C}Rapat 14:30\u{201D}."),
                 Item::Check("Todo.Remind", "Ingatkan saat jam tugas tiba", true),
                 Item::Choice("Todo.Snooze", "Tunda pengingat selama", || opts(&["5 menit", "10 menit", "15 menit"]), 1),
-            ],
-        },
-        Section {
-            name: "Minum air",
-            items: vec![
-                Item::Check("Water.On", "Ingatkan minum air, dibagi rata sepanjang jam aktif", true),
-                Item::Choice("Water.Goal", "Target harian", || opts(&["1.500 ml", "2.000 ml", "2.500 ml", "3.000 ml", "3.500 ml"]), 1),
-                Item::Choice("Water.Glass", "Ukuran gelas", || opts(&["200 ml", "250 ml", "330 ml", "500 ml"]), 1),
-                Item::Choice("Water.From", "Aktif mulai", || (5..=12).map(clock_label).collect(), 3),
-                Item::Choice("Water.Until", "Aktif sampai", || (17..=24).map(clock_label).collect(), 4),
             ],
         },
         Section {
@@ -962,7 +1048,8 @@ fn sections() -> Vec<Section> {
                 Item::Check("Rates.On", "Kurs mata uang (data Bank Sentral Eropa lewat Frankfurter)", true),
                 Item::Choice("Rates.Main", "Mata uang utama", || currency::MAIN.iter().map(|c| c.to_string()).collect(), 0),
                 Item::Text("Calendar", "Link iCal rahasia (Google Calendar: Setelan \u{203A} Alamat rahasia dalam format iCal)", true),
-                Item::Note("Link kalender disimpan terenkripsi. Acara hari ini tampil di halaman To-do."),
+                Item::Note("Link kalender disimpan terenkripsi. Acaranya tampil di halaman Kalender dan To-do; tanpa link, Kalender tetap bisa dipakai."),
+                Item::Choice("Calendar.WeekStart", "Minggu dimulai hari", || opts(&["Senin", "Minggu"]), 0),
             ],
         },
         Section {
@@ -978,9 +1065,6 @@ fn sections() -> Vec<Section> {
     ]
 }
 
-fn clock_label(h: u32) -> String {
-    clock::hhmm(h * 60)
-}
 
 fn tray_menu(hwnd: HWND) {
     let hidden = settings::flag("HideNotch", false);
@@ -1081,13 +1165,9 @@ fn main() -> Result<()> {
             tx: media::spawn(hwnd.0 as isize),
             media: Media::default(),
             last_track: String::new(),
-            pomo: Pomo::default(),
-            durations: Durations { focus: 25, short: 5, long: 15 },
+            timer: Timer::new(settings::dword("Timer.Minutes", 25) as u64),
             tasks: Vec::new(),
             today: 0,
-            water: 0,
-            water_cfg: WaterCfg::default(),
-            water_reminded: 0,
             prayer: None,
             prayer_info: String::new(),
             prayer_done: String::new(),
@@ -1100,11 +1180,17 @@ fn main() -> Result<()> {
             dragging: false,
             press: None,
             shelf_tab: 0,
+            cal_offset: 0,
+            cal_day: None,
+            week_monday: true,
+            slide: None,
+            dots_open: false,
+            dots_from: 0.0,
+            dots_since: None,
             lyrics_on: true,
             countdown: String::new(),
             rates_main: 0,
             snooze: 10,
-            focus_log: Vec::new(),
             lyric_idx: None,
             lyric_cur: String::new(),
             lyric_prev: String::new(),

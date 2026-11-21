@@ -1,9 +1,12 @@
 use super::card;
 use crate::{
-    App, clock, prayer,
+    App, clock, online, prayer,
     render::{GRAY, Gfx, R, WHITE},
-    water,
+    state::mmss,
+    timer::Run,
+    weather,
 };
+use std::time::Instant;
 
 pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R) {
     let now = clock::now();
@@ -15,10 +18,18 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R) {
     let next_task = today_tasks.iter().filter(|t| !t.done && t.time.is_some_and(|m| m >= now.min)).min_by_key(|t| t.time);
     card(g, col(0.0), "Tugas", &format!("{done}/{}", today_tasks.len()), &next_task.map_or("Tanpa jadwal".into(), |t| format!("{} {}", clock::hhmm(t.time.unwrap_or(0)), t.title)));
 
-    card(g, col(1.0), "Air", &water::ml(app.water), &format!("dari {}", water::ml(app.water_cfg.goal)));
+    let status = match app.timer.run {
+        Run::Ready => "Siap",
+        Run::Running(_) => "Berjalan",
+        Run::Paused(_) => "Dijeda",
+        Run::Ringing => "Waktu habis",
+    };
+    card(g, col(1.0), "Timer", &mmss(app.timer.remaining(Instant::now())), status);
 
-    let focus = app.focus_min(now.day);
-    card(g, col(2.0), "Fokus", &clock::span(focus), &format!("{} sesi", focus / app.durations.focus.max(1) as u32));
+    match online::WEATHER.lock().unwrap().as_ref() {
+        Some(wx) => card(g, col(2.0), "Cuaca", &format!("{:.0}\u{B0}", wx.temp), weather::describe(&wx.symbol).0),
+        None => card(g, col(2.0), "Cuaca", "\u{2013}", "Belum ada data"),
+    }
 
     let line = match app.prayer {
         Some(times) => {

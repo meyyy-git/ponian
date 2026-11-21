@@ -1,11 +1,11 @@
 //! Halaman-halaman di notch yang terbuka. Satu modul per halaman, dipilih lewat enum.
+mod calendar;
 mod music;
-mod pomodoro;
 mod prayer;
 mod shelf;
+mod timer;
 mod today;
 mod todo;
-mod water;
 pub mod widgets;
 
 use crate::{
@@ -16,29 +16,43 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Page {
     Music,
+    Timer,
+    Shelf,
+    Todo,
+    Calendar,
     Today,
     Widgets,
-    Shelf,
-    Pomodoro,
-    Todo,
-    Water,
     Prayer,
 }
 
 // shortcut: urutan halaman tetap mengikuti daftar ini; user hanya bisa menyalakan atau mematikan.
-pub const ALL: [Page; 8] = [Page::Music, Page::Pomodoro, Page::Water, Page::Shelf, Page::Todo, Page::Today, Page::Widgets, Page::Prayer];
+pub const ALL: [Page; 8] = [Page::Music, Page::Timer, Page::Shelf, Page::Todo, Page::Calendar, Page::Today, Page::Widgets, Page::Prayer];
 
 impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Music => "Musik",
+            Page::Timer => "Timer",
+            Page::Shelf => "Shelf",
+            Page::Todo => "To-do",
+            Page::Calendar => "Kalender",
             Page::Today => "Hari ini",
             Page::Widgets => "Widget",
-            Page::Shelf => "Shelf",
-            Page::Pomodoro => "Pomodoro",
-            Page::Todo => "To-do",
-            Page::Water => "Minum air",
             Page::Prayer => "Salat",
+        }
+    }
+
+    /// Ikon halaman (font ikon Windows), tampil saat titik halaman di-hover.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Page::Music => crate::NOTE,
+            Page::Timer => "\u{E916}",
+            Page::Shelf => "\u{E896}",
+            Page::Todo => "\u{E9D5}",
+            Page::Calendar => "\u{E787}",
+            Page::Today => "\u{E706}",
+            Page::Widgets => "\u{E8A9}",
+            Page::Prayer => "\u{E708}",
         }
     }
 
@@ -46,12 +60,12 @@ impl Page {
     pub fn key(self) -> &'static str {
         match self {
             Page::Music => "Page.Music",
+            Page::Timer => "Page.Timer",
+            Page::Shelf => "Page.Shelf",
+            Page::Todo => "Page.Todo",
+            Page::Calendar => "Page.Calendar",
             Page::Today => "Page.Today",
             Page::Widgets => "Page.Widgets",
-            Page::Shelf => "Page.Shelf",
-            Page::Pomodoro => "Page.Pomodoro",
-            Page::Todo => "Page.Todo",
-            Page::Water => "Page.Water",
             Page::Prayer => "Page.Prayer",
         }
     }
@@ -59,12 +73,12 @@ impl Page {
     pub fn draw(self, app: &App, g: &Gfx, area: R, buttons: &mut Vec<(R, Action)>) {
         match self {
             Page::Music => music::draw(app, g, area, buttons),
+            Page::Timer => timer::draw(app, g, area, buttons),
+            Page::Shelf => shelf::draw(app, g, area, buttons),
+            Page::Todo => todo::draw(app, g, area, buttons),
+            Page::Calendar => calendar::draw(app, g, area, buttons),
             Page::Today => today::draw(app, g, area),
             Page::Widgets => widgets::draw(app, g, area),
-            Page::Shelf => shelf::draw(app, g, area, buttons),
-            Page::Pomodoro => pomodoro::draw(app, g, area, buttons),
-            Page::Todo => todo::draw(app, g, area, buttons),
-            Page::Water => water::draw(app, g, area, buttons),
             Page::Prayer => prayer::draw(app, g, area),
         }
     }

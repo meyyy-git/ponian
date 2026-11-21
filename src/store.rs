@@ -20,25 +20,3 @@ pub fn write(name: &str, text: &str) {
     }
 }
 
-/// Catatan harian "YYYY-MM-DD angka", satu baris per hari (dipakai untuk air dan menit fokus).
-pub fn daily(name: &str) -> Vec<(i64, u32)> {
-    read(name)
-        .lines()
-        .filter_map(|l| {
-            let (day, v) = l.split_once(' ')?;
-            Some((crate::clock::parse_key(day)?, v.trim().parse().ok()?))
-        })
-        .collect()
-}
-
-pub fn daily_get(name: &str, day: i64) -> u32 {
-    daily(name).into_iter().find(|e| e.0 == day).map_or(0, |e| e.1)
-}
-
-/// Simpan nilai satu hari; hanya 60 hari terakhir yang disimpan.
-pub fn daily_set(name: &str, day: i64, value: u32) {
-    let mut all: Vec<(i64, u32)> = daily(name).into_iter().filter(|e| e.0 != day && e.0 > day - 60).collect();
-    all.push((day, value));
-    all.sort();
-    write(name, &all.iter().map(|(d, v)| format!("{} {v}\n", crate::clock::key(*d))).collect::<String>());
-}

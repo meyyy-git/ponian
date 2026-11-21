@@ -42,12 +42,12 @@ pub struct Fonts {
     pub rnum: IDWriteTextFormat,
     /// angka besar (timer, hitungan)
     pub big: IDWriteTextFormat,
-    pub cbig: IDWriteTextFormat,
     /// jam di baris status
     pub time: IDWriteTextFormat,
     pub tiny: IDWriteTextFormat,
     pub icon: IDWriteTextFormat,
     pub icon_small: IDWriteTextFormat,
+    pub icon_mid: IDWriteTextFormat,
     pub icon_big: IDWriteTextFormat,
 }
 
@@ -117,12 +117,12 @@ impl Gfx {
                 num: font(ui, 15.0, normal, left)?,
                 rnum: font(ui, 15.0, normal, right)?,
                 big: font(ui, 27.0, heavy, left)?,
-                cbig: font(ui, 22.0, heavy, center)?,
                 time: font(ui, 13.5, heavy, left)?,
                 tiny: font(ui, 9.5, semi, left)?,
                 // font ikon bawaan Windows 10 dan 11
                 icon: font(mdl, 15.0, normal, center)?,
                 icon_small: font(mdl, 9.5, normal, center)?,
+                icon_mid: font(mdl, 12.5, normal, center)?,
                 icon_big: font(mdl, 24.0, normal, center)?,
             };
             Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(None), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h }, bits, bound: Cell::new(h) })

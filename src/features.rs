@@ -4,10 +4,8 @@ use crate::{
     media::Msg,
     notify, ocr,
     pages::Page,
-    pomodoro::{Durations, Phase},
     prayer, settings, shelf, store, system,
     todo::{self, Task},
-    water,
 };
 use std::time::Instant;
 use windows::Win32::{
@@ -17,38 +15,13 @@ use windows::Win32::{
 };
 
 pub const INPUT_TODO: usize = 1;
-#[derive(Clone, Copy, Default)]
-pub struct WaterCfg {
-    pub on: bool,
-    pub goal: u32,
-    pub glass: u32,
-    pub from: u32,
-    pub until: u32,
-}
-
-const FOCUS: [u64; 7] = [15, 20, 25, 30, 45, 50, 60];
-const SHORT: [u64; 3] = [3, 5, 10];
-const LONG: [u64; 4] = [10, 15, 20, 30];
 pub const SNOOZE: [u32; 3] = [5, 10, 15];
-const GOAL: [u32; 5] = [1500, 2000, 2500, 3000, 3500];
-const GLASS: [u32; 4] = [200, 250, 330, 500];
-
-fn pick<T: Copy>(list: &[T], key: &str, default: u32) -> T {
-    list[(settings::dword(key, default) as usize).min(list.len() - 1)]
-}
 
 impl App {
     /// Baca setting fitur.
     pub fn reload_features(&mut self) {
-        self.durations = Durations { focus: pick(&FOCUS, "Pomo.Focus", 2), short: pick(&SHORT, "Pomo.Short", 1), long: pick(&LONG, "Pomo.Long", 1) };
-        self.water_cfg = WaterCfg {
-            on: settings::flag("Water.On", true),
-            goal: pick(&GOAL, "Water.Goal", 1),
-            glass: pick(&GLASS, "Water.Glass", 1),
-            from: 5 + settings::dword("Water.From", 3).min(7),
-            until: 17 + settings::dword("Water.Until", 4).min(7),
-        };
         self.sound = settings::flag("Sound", true);
+        self.week_monday = settings::dword("Calendar.WeekStart", 0) == 0;
         self.lyrics_on = settings::flag("ShowLyrics", true);
         self.countdown = settings::string("Countdown");
         self.rates_main = (settings::dword("Rates.Main", 0) as usize).min(crate::currency::MAIN.len() - 1);
@@ -57,11 +30,6 @@ impl App {
         self.widgets = (settings::dword("Widget.Left", 0) as usize, settings::dword("Widget.Right", 1) as usize);
         self.cities = (settings::dword("Clock.City1", 5) as usize, settings::dword("Clock.City2", 10) as usize);
         self.compute_prayer();
-    }
-
-    /// Menit fokus Pomodoro pada hari `day`.
-    pub fn focus_min(&self, day: i64) -> u32 {
-        self.focus_log.iter().find(|e| e.0 == day).map_or(0, |e| e.1)
     }
 
     pub fn compute_prayer(&mut self) {
@@ -199,23 +167,17 @@ impl App {
         self.today = clock::now().day;
         self.tasks = todo::load(&store::read("tasks.txt"));
         todo::cleanup(&mut self.tasks, self.today);
-        self.water = store::daily_get("water.txt", self.today);
-        self.focus_log = store::daily("focus.txt");
-        // pengingat minum pertama baru datang 45 menit setelah Ponian dibuka, bukan langsung
-        self.water_reminded = clock::now().min;
         self.files = shelf::load_files();
         self.clips = shelf::load_clips();
     }
 
-    /// Dijalankan tiap ganti menit: pergantian hari, pengingat tugas, minum air, dan waktu salat.
+    /// Dijalankan tiap ganti menit: pergantian hari, pengingat tugas, dan waktu salat.
     pub fn minute_jobs(&mut self) {
         let now = clock::now();
         if now.day != self.today {
             self.today = now.day;
             todo::cleanup(&mut self.tasks, now.day);
             self.save_tasks();
-            self.water = store::daily_get("water.txt", now.day);
-            self.water_reminded = 0;
             self.compute_prayer();
         }
 
@@ -228,11 +190,6 @@ impl App {
             return self.alert("\u{E823}", title.clone(), Some(title));
         }
 
-        let w = self.water_cfg;
-        if w.on && water::due(now.min, w.from, w.until, w.goal, self.water, w.glass, now.min.saturating_sub(self.water_reminded)) {
-            self.water_reminded = now.min;
-            return self.alert("\u{EB42}", format!("Waktunya minum segelas air ({} ml)", w.glass), None);
-        }
 
         let notify = settings::dword("Prayer.Notify", 1);
         if let Some(times) = self.prayer
@@ -253,16 +210,15 @@ impl App {
         }
     }
 
-    /// Dipanggil tiap 250 ms saat Pomodoro berjalan.
-    pub fn pomo_tick(&mut self) -> bool {
-        let Some(phase) = self.pomo.tick(Instant::now()) else { return false };
-        if phase == Phase::Focus {
-            let day = clock::now().day;
-            store::daily_set("focus.txt", day, self.focus_min(day) + self.durations.focus as u32);
-            self.focus_log = store::daily("focus.txt");
+    /// Dipanggil tiap 250 ms saat timer berjalan; true tepat saat waktu habis.
+    pub fn timer_tick(&mut self) -> bool {
+        if !self.timer.tick(Instant::now()) {
+            return false;
         }
         self.beep();
-        self.page = self.pages.iter().position(|p| *p == Page::Pomodoro).unwrap_or(self.page);
+        if let Some(i) = self.pages.iter().position(|p| *p == Page::Timer) {
+            self.page = i;
+        }
         true
     }
 
@@ -270,7 +226,7 @@ impl App {
         let now = clock::now();
         match action {
             Action::Media(msg) => drop(self.tx.send(msg())),
-            Action::Page(i) => self.go(i),
+            Action::Page(i) => self.go(i, if i > self.page { 1.0 } else { -1.0 }),
             // ditangani di App::click karena butuh posisi klik
             Action::Seek { .. } => {}
             Action::Mute => drop(self.tx.send(Msg::Mute)),
@@ -279,18 +235,21 @@ impl App {
                 settings::set_dword("ShowLyrics", self.lyrics_on as u32);
                 let _ = self.tx.send(Msg::Refresh);
             }
-            Action::WaterToggle => {
-                self.water_cfg.on = !self.water_cfg.on;
-                settings::set_dword("Water.On", self.water_cfg.on as u32);
-            }
             Action::OpenSettings => {
                 let _ = unsafe { PostMessageW(Some(self.hwnd), crate::WM_APP_OPEN_SETTINGS, WPARAM(0), LPARAM(0)) };
             }
             Action::ShelfTab(tab) => self.shelf_tab = tab,
             Action::PrevPage => self.turn(-1),
             Action::NextPage => self.turn(1),
-            Action::PomoToggle => self.pomo.toggle(Instant::now(), self.durations),
-            Action::PomoReset => self.pomo.reset(),
+            Action::TimerToggle => self.timer.toggle(Instant::now()),
+            Action::TimerReset => self.timer.reset(),
+            Action::CalMove(by) => self.cal_offset = (self.cal_offset + by).clamp(-1200, 1200),
+            Action::CalToday => (self.cal_offset, self.cal_day) = (0, None),
+            Action::CalDay(day) => self.cal_day = Some(day),
+            Action::TimerSet(minutes) => {
+                self.timer.set(minutes);
+                settings::set_dword("Timer.Minutes", minutes as u32);
+            }
             Action::TodoAdd => self.open_todo_input(),
             Action::TodoToggle(i) => {
                 if let Some(t) = self.tasks.get_mut(i) {
@@ -306,14 +265,6 @@ impl App {
                     self.tasks.remove(i);
                     self.save_tasks();
                 }
-            }
-            Action::WaterAdd => {
-                self.water += self.water_cfg.glass;
-                store::daily_set("water.txt", now.day, self.water);
-            }
-            Action::WaterUndo => {
-                self.water = self.water.saturating_sub(self.water_cfg.glass);
-                store::daily_set("water.txt", now.day, self.water);
             }
             Action::Snooze => {
                 let title = self.alert.take().and_then(|a| a.task);

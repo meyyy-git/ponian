@@ -1,11 +1,12 @@
 //! Widget kecil: dua di halaman Widget, dipilih di Pengaturan.
 use crate::{
     App, astro, clock, currency, online, prayer,
-    render::{ACCENT, DIM, GRAY, Gfx, R, WHITE},
-    water, weather, worldclock,
+    render::{ACCENT, GRAY, Gfx, R, WHITE},
+    weather, worldclock,
 };
 
-pub const WIDGETS: [&str; 10] = ["Jam dunia", "Hitung mundur", "Bulan", "Minggu ini", "Salat berikutnya", "Fokus hari ini", "Air hari ini", "Tanggal", "Cuaca", "Kurs"];
+// indeks 4 (Tanggal) ditangani cabang `_` di fungsi widget
+pub const WIDGETS: [&str; 7] = ["Jam dunia", "Hitung mundur", "Bulan", "Salat berikutnya", "Tanggal", "Cuaca", "Kurs"];
 
 pub fn names() -> Vec<String> {
     WIDGETS.iter().map(|s| s.to_string()).collect()
@@ -90,20 +91,6 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
             g.text(&if full <= 1 { "Purnama malam ini".into() } else { format!("Purnama dalam {full} hari") }, &g.f.small, [l, t + 62.0, r, b], GRAY);
         }
         3 => {
-            title("FOKUS 7 HARI");
-            let log = &app.focus_log;
-            let days: Vec<u32> = (0..7).map(|i| log.iter().find(|e| e.0 == now.day - 6 + i).map_or(0, |e| e.1)).collect();
-            let max = days.iter().copied().max().unwrap_or(0).max(1);
-            let w = (r - l) / 7.0;
-            for (i, v) in days.iter().enumerate() {
-                let x = l + i as f32 * w + 3.0;
-                let h = 44.0 * *v as f32 / max as f32;
-                g.rrect([x, t + 70.0 - h.max(3.0), x + w - 6.0, t + 70.0], 2.5, if i == 6 { ACCENT } else { DIM });
-                let wd = ["M", "S", "S", "R", "K", "J", "S"][clock::weekday(now.day - 6 + i as i64) as usize];
-                g.text(wd, &g.f.csmall, [x - 2.0, t + 72.0, x + w - 4.0, b], GRAY);
-            }
-        }
-        4 => {
             title("SALAT BERIKUTNYA");
             match app.prayer {
                 Some(times) => {
@@ -116,18 +103,6 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
             }
         }
         5 => {
-            title("FOKUS HARI INI");
-            let min = app.focus_min(now.day);
-            g.text(&clock::span(min), &g.f.big, [l, t + 22.0, r, t + 60.0], WHITE);
-            let sessions = min / app.durations.focus.max(1) as u32;
-            g.text(&format!("{sessions} sesi fokus"), &g.f.small, [l, t + 60.0, r, b], GRAY);
-        }
-        6 => {
-            title("AIR HARI INI");
-            g.text(&water::ml(app.water), &g.f.big, [l, t + 22.0, r, t + 60.0], WHITE);
-            g.text(&format!("dari {}", water::ml(app.water_cfg.goal)), &g.f.small, [l, t + 60.0, r, b], GRAY);
-        }
-        8 => {
             title("CUACA");
             match online::WEATHER.lock().unwrap().clone() {
                 Some(w) => {
@@ -140,7 +115,7 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
                 None => g.text(if app.prayer.is_some() { "Memuat cuaca\u{2026}" } else { "Atur lokasi di Pengaturan" }, &g.f.small, [l, t + 22.0, r, b], GRAY),
             }
         }
-        9 => {
+        6 => {
             title("KURS");
             let main = currency::MAIN[app.rates_main];
             match online::RATES.lock().unwrap().clone() {

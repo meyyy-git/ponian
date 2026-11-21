@@ -29,8 +29,8 @@ pub const TAB: isize = 2;
 pub const BLUR: isize = 3;
 
 const BG: COLORREF = COLORREF(0x00262626);
-/// warna aksen Ponian (urutan BGR): garis tepi kotak sebagai tanda fokus, seperti kolom teks macOS
-const RING: COLORREF = COLORREF(0x00f65c8b);
+/// warna aksen (biru macOS, urutan BGR): garis tepi kotak sebagai tanda fokus, seperti kolom teks macOS
+const RING: COLORREF = COLORREF(0x00ff840a);
 const EM_SETCUEBANNER: u32 = 0x1501;
 /// lebar area petunjuk tombol "Enter" di kanan kotak, dalam DIP
 const HINT: f32 = 62.0;

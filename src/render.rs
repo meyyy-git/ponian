@@ -25,7 +25,8 @@ pub const DIM: u32 = 0x5a5a5a;
 pub const CHIP: u32 = 0x1f1f1f;
 pub const CARD: u32 = 0x1a1a1a;
 pub const TRACK: u32 = 0x333333;
-pub const ACCENT: u32 = 0x8b5cf6;
+/// biru aksen bawaan macOS (mode gelap)
+pub const ACCENT: u32 = 0x0a84ff;
 pub const GREEN: u32 = 0x30d158;
 
 pub struct Fonts {

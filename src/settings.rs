@@ -455,7 +455,7 @@ fn draw(ui: &mut Ui) {
     }
     // bingkai fokus untuk pemakaian keyboard
     if let Some((r, _)) = focus.and_then(|i| hits.get(i)) {
-        g.stroke([r[0] + 1.0, r[1] + 1.0, r[2] - 1.0, r[3] - 1.0], 7.0, 0xb9a3ff, 1.6);
+        g.stroke([r[0] + 1.0, r[1] + 1.0, r[2] - 1.0, r[3] - 1.0], 7.0, 0x8cc8ff, 1.6);
     }
     (ui.hits, ui.content) = (hits, content);
 }

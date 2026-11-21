@@ -77,6 +77,8 @@ const WM_MOUSEHWHEEL: u32 = 0x020E;
 /// Ukuran window dalam DIP. Notch digambar di dalamnya, sisanya transparan dan tembus klik.
 const WIN: (f32, f32) = (440.0, 190.0);
 const IDLE: (f32, f32) = (152.0, 30.0);
+/// Garis tipis saat ada jendela yang di-maximize: cukup untuk disentuh kursor, tidak menutupi tab.
+const TUCKED: (f32, f32) = (72.0, 5.0);
 const EXPANDED: (f32, f32) = (396.0, 171.0);
 /// Notch sedikit membesar begitu kursor masuk, sebelum jeda hover selesai.
 const PEEK: (f32, f32) = (8.0, 3.0);
@@ -242,6 +244,9 @@ pub struct App {
     hover: bool,
     user_hidden: bool,
     fullscreen: bool,
+    /// setting "Tuck" menyala, dan ada jendela yang di-maximize di depan
+    tuck: bool,
+    covered: bool,
     ticking: bool,
     pages: Vec<Page>,
     page: usize,
@@ -299,6 +304,8 @@ impl App {
         if !self.hide_fullscreen {
             self.fullscreen = false;
         }
+        self.tuck = settings::flag("Tuck", true);
+        self.covered &= self.tuck;
         self.reload_features();
     }
 
@@ -307,6 +314,7 @@ impl App {
         match view {
             View::Hidden => (IDLE.0, 0.0),
             View::Idle => (IDLE.0 + peek.0, IDLE.1 + peek.1),
+            View::Tucked => (TUCKED.0 + peek.0, TUCKED.1 + peek.1),
             View::Compact => (self.lyric_w + peek.0, LYRIC.1 + peek.1),
             View::Hud if matches!(self.hud, Some(Hud::Alert | Hud::Info)) => (380.0, 38.0),
             View::Hud if matches!(self.hud, Some(Hud::Caps(_) | Hud::Lang(_))) => (220.0, 34.0),
@@ -330,6 +338,8 @@ impl App {
             hud: self.hud.is_some(),
             // pill melebar hanya kalau ada lirik untuk ditampilkan; tanpa lirik cukup ikon audio yang bergerak
             playing: playing && self.media.lyrics.is_some(),
+            // timer dan stopwatch yang berjalan tetap terlihat di pill
+            tucked: self.covered && !self.timer.running() && !self.stopwatch.running(),
         });
         let to = self.target(view);
         unsafe {
@@ -666,7 +676,7 @@ impl App {
                     g.alpha.set(k);
                 }
             }
-            View::Hidden => {}
+            View::Hidden | View::Tucked => {}
         }
     }
 
@@ -883,8 +893,9 @@ impl App {
                         if new_minute {
                             self.minute_jobs();
                         }
-                        if fullscreen != self.fullscreen {
-                            self.fullscreen = fullscreen;
+                        let covered = self.tuck && power::covered(self.hwnd);
+                        if fullscreen != self.fullscreen || covered != self.covered {
+                            (self.fullscreen, self.covered) = (fullscreen, covered);
                             self.update();
                         } else if new_minute && self.view != View::Hidden && self.anim_start.is_none() {
                             self.draw();
@@ -1049,6 +1060,7 @@ fn sections() -> Vec<Section> {
             items: vec![
                 Item::Check(settings::AUTOSTART, "Launch at Windows startup", false),
                 Item::Check("HideFullscreen", "Hide when an app is full screen (games, video, presentations)", true),
+                Item::Check("Tuck", "Shrink to a thin line when a window is maximized", true),
                 Item::Check("HideNotch", "Hide notch", false),
             ],
         },
@@ -1336,6 +1348,8 @@ fn main() -> Result<()> {
             hover: false,
             user_hidden: false,
             fullscreen: false,
+            tuck: true,
+            covered: false,
             ticking: false,
             pages: vec![Page::Music],
             page: 0,

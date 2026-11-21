@@ -107,7 +107,7 @@ impl App {
     /// yang tidak sedang dipakai; halaman itu dimuat lagi sendiri saat dibutuhkan.
     pub fn trim_when_idle(&mut self) {
         use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
-        let idle = matches!(self.view, crate::state::View::Idle | crate::state::View::Hidden) && !(self.media.session && self.media.playing);
+        let idle = matches!(self.view, crate::state::View::Idle | crate::state::View::Tucked | crate::state::View::Hidden) && !(self.media.session && self.media.playing);
         self.idle_secs = if idle { self.idle_secs + 1 } else { 0 };
         if self.idle_secs == 20 {
             let _ = unsafe { SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX) };

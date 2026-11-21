@@ -5,6 +5,8 @@ use std::time::Duration;
 pub enum View {
     Hidden,
     Idle,
+    /// garis tipis di tepi atas, supaya tidak menutupi tab atau judul jendela yang di-maximize
+    Tucked,
     Compact,
     Hud,
     Expanded,
@@ -17,6 +19,8 @@ pub struct Inputs {
     pub ringing: bool,
     pub hud: bool,
     pub playing: bool,
+    /// ada jendela yang di-maximize di depan dan tidak ada timer yang perlu terlihat
+    pub tucked: bool,
 }
 
 pub fn view(i: Inputs) -> View {
@@ -28,6 +32,8 @@ pub fn view(i: Inputs) -> View {
         View::Hud
     } else if i.playing {
         View::Compact
+    } else if i.tucked {
+        View::Tucked
     } else {
         View::Idle
     }
@@ -77,6 +83,11 @@ mod tests {
         assert_eq!(view(Inputs { playing: true, hud: true, ..i }), View::Hud);
         assert_eq!(view(Inputs { hud: true, hover: true, ..i }), View::Expanded);
         assert_eq!(view(Inputs { ringing: true, ..i }), View::Expanded);
+        // menyusut hanya menggantikan pill diam: lirik, popup, dan hover tetap tampil
+        assert_eq!(view(Inputs { tucked: true, ..i }), View::Tucked);
+        assert_eq!(view(Inputs { tucked: true, playing: true, ..i }), View::Compact);
+        assert_eq!(view(Inputs { tucked: true, hud: true, ..i }), View::Hud);
+        assert_eq!(view(Inputs { tucked: true, hover: true, ..i }), View::Expanded);
         assert_eq!(view(Inputs { ringing: true, hover: true, hidden: true, ..i }), View::Hidden);
     }
 

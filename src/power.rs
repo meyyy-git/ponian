@@ -15,6 +15,19 @@ pub fn status() -> Option<(bool, u8)> {
     Some((s.ACLineStatus == 1, s.BatteryLifePercent))
 }
 
+/// Jendela yang sedang aktif di-maximize di layar yang sama dengan `notch`: tab atau judulnya ada
+/// tepat di bawah pill.
+pub fn covered(notch: windows::Win32::Foundation::HWND) -> bool {
+    use windows::Win32::{
+        Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
+        UI::WindowsAndMessaging::{GetForegroundWindow, IsZoomed},
+    };
+    unsafe {
+        let front = GetForegroundWindow();
+        !front.is_invalid() && IsZoomed(front).as_bool() && MonitorFromWindow(front, MONITOR_DEFAULTTONEAREST) == MonitorFromWindow(notch, MONITOR_DEFAULTTONEAREST)
+    }
+}
+
 pub fn fullscreen() -> bool {
     matches!(unsafe { SHQueryUserNotificationState() }, Ok(QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE))
 }

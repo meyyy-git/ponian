@@ -57,8 +57,8 @@ pub struct Gfx {
     rt: ID2D1DCRenderTarget,
     brush: ID2D1SolidColorBrush,
     dash: Option<ID2D1StrokeStyle>,
-    /// bitmap cover album terakhir, dikenali dari alamat datanya
-    art: RefCell<Option<(usize, ID2D1Bitmap)>>,
+    /// bitmap gambar yang pernah digambar (cover album, ikon aplikasi)
+    art: RefCell<Vec<(usize, ID2D1Bitmap)>>,
     pub f: Fonts,
     /// pengali alpha untuk isi notch, dipakai saat animasi fade
     pub alpha: Cell<f32>,
@@ -125,7 +125,7 @@ impl Gfx {
                 icon_mid: font(mdl, 12.5, normal, center)?,
                 icon_big: font(mdl, 24.0, normal, center)?,
             };
-            Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(None), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h }, bits, bound: Cell::new(h) })
+            Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(Vec::new()), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h }, bits, bound: Cell::new(h) })
         }
     }
 
@@ -322,14 +322,19 @@ impl Gfx {
 
     /// Gambar persegi `side` x `side` piksel BGRA ke `r` dengan sudut membulat.
     pub fn image(&self, bgra: &[u8], side: u32, r: R, radius: f32) {
-        let key = bgra.as_ptr() as usize;
+        // kunci = alamat data dicampur cuplikan isinya, supaya alamat yang dipakai ulang tidak salah gambar
+        let key = bgra.iter().step_by(61).fold(bgra.as_ptr() as usize, |h, &b| h.wrapping_mul(31).wrapping_add(b as usize));
         let mut cache = self.art.borrow_mut();
-        if cache.as_ref().is_none_or(|c| c.0 != key) {
+        if !cache.iter().any(|c| c.0 == key) {
             let props = D2D1_BITMAP_PROPERTIES { pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED }, dpiX: 96.0, dpiY: 96.0 };
-            let made = unsafe { self.rt.CreateBitmap(D2D_SIZE_U { width: side, height: side }, Some(bgra.as_ptr() as _), side * 4, &props) };
-            *cache = made.ok().map(|b| (key, b));
+            let Ok(made) = (unsafe { self.rt.CreateBitmap(D2D_SIZE_U { width: side, height: side }, Some(bgra.as_ptr() as _), side * 4, &props) }) else { return };
+            // cukup untuk cover album dan selusin ikon aplikasi
+            if cache.len() >= 16 {
+                cache.remove(0);
+            }
+            cache.push((key, made));
         }
-        let Some((_, bitmap)) = cache.as_ref() else { return };
+        let Some((_, bitmap)) = cache.iter().find(|c| c.0 == key) else { return };
         unsafe {
             let Ok(brush) = self.rt.CreateBitmapBrush(bitmap, None, None) else { return };
             let s = (r[2] - r[0]) / side as f32;
@@ -337,6 +342,11 @@ impl Gfx {
             brush.SetOpacity(self.alpha.get());
             self.rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(r), radiusX: radius, radiusY: radius }, &brush);
         }
+    }
+
+    /// Geser semua gambar berikutnya sejauh (dx, dy) DIP; (0, 0) mengembalikan ke semula.
+    pub fn shift(&self, dx: f32, dy: f32) {
+        unsafe { self.rt.SetTransform(&Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: dx, M32: dy }) }
     }
 
     pub fn clip(&self, r: R) {

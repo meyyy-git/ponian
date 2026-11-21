@@ -1,4 +1,5 @@
 //! Halaman-halaman di notch yang terbuka. Satu modul per halaman, dipilih lewat enum.
+mod apps;
 mod calendar;
 mod music;
 mod prayer;
@@ -16,6 +17,7 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Page {
     Music,
+    Apps,
     Timer,
     Shelf,
     Todo,
@@ -26,12 +28,13 @@ pub enum Page {
 }
 
 // shortcut: urutan halaman tetap mengikuti daftar ini; user hanya bisa menyalakan atau mematikan.
-pub const ALL: [Page; 8] = [Page::Music, Page::Timer, Page::Shelf, Page::Todo, Page::Calendar, Page::Today, Page::Widgets, Page::Prayer];
+pub const ALL: [Page; 9] = [Page::Music, Page::Apps, Page::Timer, Page::Shelf, Page::Todo, Page::Calendar, Page::Today, Page::Widgets, Page::Prayer];
 
 impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Music => "Musik",
+            Page::Apps => "Aplikasi",
             Page::Timer => "Timer",
             Page::Shelf => "Shelf",
             Page::Todo => "To-do",
@@ -46,6 +49,7 @@ impl Page {
     pub fn icon(self) -> &'static str {
         match self {
             Page::Music => crate::NOTE,
+            Page::Apps => "\u{E71D}",
             Page::Timer => "\u{E916}",
             Page::Shelf => "\u{E896}",
             Page::Todo => "\u{E9D5}",
@@ -60,6 +64,7 @@ impl Page {
     pub fn key(self) -> &'static str {
         match self {
             Page::Music => "Page.Music",
+            Page::Apps => "Page.Apps",
             Page::Timer => "Page.Timer",
             Page::Shelf => "Page.Shelf",
             Page::Todo => "Page.Todo",
@@ -73,6 +78,7 @@ impl Page {
     pub fn draw(self, app: &App, g: &Gfx, area: R, buttons: &mut Vec<(R, Action)>) {
         match self {
             Page::Music => music::draw(app, g, area, buttons),
+            Page::Apps => apps::draw(app, g, area, buttons),
             Page::Timer => timer::draw(app, g, area, buttons),
             Page::Shelf => shelf::draw(app, g, area, buttons),
             Page::Todo => todo::draw(app, g, area, buttons),

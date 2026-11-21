@@ -79,18 +79,50 @@ impl App {
 
     /// state: 1 = file sedang diseret di atas notch, 0 = keluar, 2 = dijatuhkan
     pub fn on_drag(&mut self, state: usize) {
-        self.dragging = state == 1;
-        if state == 1 {
+        // file yang dijatuhkan di halaman Aplikasi menjadi pintasan; di halaman lain masuk ke Shelf
+        let to_apps = self.view == crate::state::View::Expanded && self.current_page() == Page::Apps;
+        self.dragging = state == 1 && !to_apps;
+        if state == 1 && !to_apps {
             self.page = self.pages.iter().position(|p| *p == Page::Shelf).unwrap_or(self.page);
         }
         if state == 2 {
             let dropped: Vec<String> = std::mem::take(&mut *shelf::DROPPED.lock().unwrap());
+            if to_apps {
+                return self.add_apps(dropped);
+            }
             for f in dropped {
                 if !self.files.contains(&f) {
                     self.files.insert(0, f);
                 }
             }
             shelf::save_files(&self.files);
+        }
+    }
+
+    /// Dipanggil tiap detik. Setelah notch menganggur 20 detik, minta Windows melepas halaman memori
+    /// yang tidak sedang dipakai; halaman itu dimuat lagi sendiri saat dibutuhkan.
+    pub fn trim_when_idle(&mut self) {
+        use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        let idle = matches!(self.view, crate::state::View::Idle | crate::state::View::Hidden) && !(self.media.session && self.media.playing);
+        self.idle_secs = if idle { self.idle_secs + 1 } else { 0 };
+        if self.idle_secs == 20 {
+            let _ = unsafe { SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX) };
+        }
+    }
+
+    pub fn add_apps(&mut self, paths: Vec<String>) {
+        for path in paths {
+            if self.apps.len() < crate::apps::MAX && !self.apps.iter().any(|s| s.path == path) {
+                self.apps.push(crate::apps::make(&path));
+            }
+        }
+        crate::apps::save(&self.apps);
+    }
+
+    pub fn remove_app(&mut self, i: usize) {
+        if i < self.apps.len() {
+            self.apps.remove(i);
+            crate::apps::save(&self.apps);
         }
     }
 
@@ -168,6 +200,7 @@ impl App {
         self.tasks = todo::load(&store::read("tasks.txt"));
         todo::cleanup(&mut self.tasks, self.today);
         self.files = shelf::load_files();
+        self.apps = crate::apps::load();
         self.clips = shelf::load_clips();
     }
 
@@ -243,6 +276,15 @@ impl App {
             Action::NextPage => self.turn(1),
             Action::TimerToggle => self.timer.toggle(Instant::now()),
             Action::TimerReset => self.timer.reset(),
+            Action::AppOpen(i) => {
+                if let Some(s) = self.apps.get(i) {
+                    shelf::open(&s.path);
+                }
+            }
+            // dialog pilih file dibuka dari wndproc, di luar peminjaman state app
+            Action::AppAdd => {
+                let _ = unsafe { PostMessageW(Some(self.hwnd), crate::WM_APP_PICK, WPARAM(0), LPARAM(0)) };
+            }
             Action::CalMove(by) => self.cal_offset = (self.cal_offset + by).clamp(-1200, 1200),
             Action::CalToday => (self.cal_offset, self.cal_day) = (0, None),
             Action::CalDay(day) => self.cal_day = Some(day),

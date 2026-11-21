@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 //! Ponian: notch untuk Windows.
 
+mod apps;
 mod astro;
 mod calendar;
 mod clock;
@@ -65,6 +66,7 @@ pub const WM_APP_NET: u32 = WM_APP + 9;
 pub const WM_APP_AUDIODEV: u32 = WM_APP + 11;
 pub const WM_APP_ONLINE: u32 = WM_APP + 12;
 pub const WM_APP_OCR: u32 = WM_APP + 14;
+pub const WM_APP_PICK: u32 = WM_APP + 15;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const PBT_POWERSETTINGCHANGE: u32 = 0x8013;
 pub const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 5;
@@ -149,6 +151,8 @@ pub enum Action {
     CalMove(i32),
     CalToday,
     CalDay(i64),
+    AppOpen(usize),
+    AppAdd,
     TodoAdd,
     TodoToggle(usize),
     TodoDelete(usize),
@@ -184,6 +188,11 @@ pub struct App {
     press: Option<(f32, f32, usize)>,
     /// tab halaman Shelf: 0 = File, 1 = Clipboard
     shelf_tab: u8,
+    apps: Vec<apps::Shortcut>,
+    /// tombol yang sedang di bawah kursor, untuk sorotan hover
+    hot: Option<R>,
+    /// detik sejak notch terakhir aktif, untuk melepas memori saat menganggur
+    idle_secs: u32,
     /// kalender: jarak bulan yang ditampilkan dari bulan ini, hari yang dipilih, dan awal minggu
     cal_offset: i32,
     cal_day: Option<i64>,
@@ -342,7 +351,7 @@ impl App {
             let e = state::spring(t);
             self.cur = (self.from.0 + (self.to.0 - self.from.0) * e, self.from.1 + (self.to.1 - self.from.1) * e);
             if self.fade {
-                k = (t / FADE_SECS).min(1.0);
+                k = 1.0 - (1.0 - (t / FADE_SECS).min(1.0)).powi(2);
             }
             if t >= state::SPRING_SECS {
                 (self.anim_start, self.fade, self.cur) = (None, false, self.to);
@@ -378,7 +387,15 @@ impl App {
             if let (true, Some(art)) = (musical, &self.media.art) {
                 g.glow(cx - w / 2.0, cx + w / 2.0, h, radius, art.tint);
             }
+            // isi yang baru muncul naik sedikit sambil memudar masuk
+            g.shift(0.0, (1.0 - k) * 6.0);
             self.content(cx, &mut buttons);
+            g.shift(0.0, 0.0);
+            // sorotan tipis di bawah kursor
+            if let Some(hot) = self.hot {
+                g.alpha.set(0.09 * k);
+                g.rrect(hot, ((hot[3] - hot[1]) / 2.0).min(11.0), WHITE);
+            }
             g.unclip();
         }
         g.end(self.hwnd);
@@ -716,7 +733,7 @@ impl App {
                     self.update();
                 }
                 WM_MOUSELEAVE => {
-                    (self.inside, self.hover) = (false, false);
+                    (self.inside, self.hover, self.hot) = (false, false, None);
                     let _ = KillTimer(Some(self.hwnd), T_HOVER);
                     self.update();
                 }
@@ -735,7 +752,17 @@ impl App {
                 }
                 WM_MOUSEMOVE => {
                     let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
-                    self.hover_dots(dip(lp.0), dip(lp.0 >> 16));
+                    let (x, y) = (dip(lp.0), dip(lp.0 >> 16));
+                    self.hover_dots(x, y);
+                    // sorot tombol di bawah kursor dan ubah kursor menjadi tangan
+                    let hot = self.buttons.iter().rev().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]).filter(|b| !matches!(b.1, Action::Seek { .. })).map(|b| b.0);
+                    if hot.is_some() {
+                        SetCursor(LoadCursorW(None, IDC_HAND).ok());
+                    }
+                    if hot != self.hot {
+                        self.hot = hot;
+                        self.draw();
+                    }
                 }
                 WM_LBUTTONDOWN => {
                     let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
@@ -750,6 +777,16 @@ impl App {
                     let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
                     self.press = None;
                     self.click(dip(lp.0), dip(lp.0 >> 16));
+                }
+                // klik kanan pada ikon aplikasi menghapus pintasannya
+                WM_RBUTTONUP => {
+                    let dip = |v: isize| (v & 0xffff) as i16 as f32 / self.scale;
+                    let (x, y) = (dip(lp.0), dip(lp.0 >> 16));
+                    if let Some(&(_, Action::AppOpen(i))) = self.buttons.iter().rev().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]) {
+                        self.remove_app(i);
+                        self.hot = None;
+                        self.update();
+                    }
                 }
                 WM_CLIPBOARDUPDATE => self.on_clipboard(),
                 WM_APP_DRAG => {
@@ -800,6 +837,7 @@ impl App {
                         let new_minute = minute != self.minute;
                         self.minute = minute;
                         self.check_layout();
+                        self.trim_when_idle();
                         if new_minute {
                             self.minute_jobs();
                         }
@@ -1094,6 +1132,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             // klik pada notch tidak boleh mengambil fokus dari app yang sedang dipakai
             WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+            WM_APP_PICK => {
+                // dialog menjalankan message loop sendiri, jadi state app tidak boleh sedang dipinjam
+                if let Some(path) = apps::pick(hwnd) {
+                    APP.with_borrow_mut(|a| {
+                        if let Some(a) = a {
+                            a.add_apps(vec![path]);
+                            a.update();
+                        }
+                    });
+                }
+                return LRESULT(0);
+            }
             WM_APP_OPEN_SETTINGS => {
                 settings::open();
                 return LRESULT(0);
@@ -1180,6 +1230,9 @@ fn main() -> Result<()> {
             dragging: false,
             press: None,
             shelf_tab: 0,
+            apps: Vec::new(),
+            hot: None,
+            idle_secs: 0,
             cal_offset: 0,
             cal_day: None,
             week_monday: true,

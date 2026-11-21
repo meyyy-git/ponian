@@ -13,8 +13,8 @@ pub enum Page {
     Timer,
 }
 
-// shortcut: urutan halaman tetap; urutan pilihan user menyusul bersama jendela Settings.
-pub const PAGES: [Page; 2] = [Page::Music, Page::Timer];
+// shortcut: urutan halaman tetap mengikuti daftar ini; user hanya bisa menyalakan atau mematikan.
+pub const ALL: [Page; 2] = [Page::Music, Page::Timer];
 
 impl Page {
     pub fn title(self) -> &'static str {
@@ -24,12 +24,26 @@ impl Page {
         }
     }
 
+    /// Nama setting registry yang menyalakan halaman ini.
+    pub fn key(self) -> &'static str {
+        match self {
+            Page::Music => "Page.Music",
+            Page::Timer => "Page.Timer",
+        }
+    }
+
     pub fn draw(self, app: &App, g: &Gfx, area: R, buttons: &mut Vec<(R, Action)>) {
         match self {
             Page::Music => music::draw(app, g, area, buttons),
             Page::Timer => timer::draw(app, g, area, buttons),
         }
     }
+}
+
+/// Halaman yang dinyalakan user, minimal satu.
+pub fn enabled() -> Vec<Page> {
+    let pages: Vec<Page> = ALL.into_iter().filter(|p| crate::settings::flag(p.key(), true)).collect();
+    if pages.is_empty() { vec![Page::Music] } else { pages }
 }
 
 /// Tombol kapsul kecil berlabel.

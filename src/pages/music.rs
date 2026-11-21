@@ -25,7 +25,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>)
     }
 
     let Some(lines) = &m.lyrics else { return };
-    let i = lyrics::active(lines, m.pos());
+    let i = lyrics::active(lines, app.lyric_pos());
     let text = |i: Option<usize>| i.and_then(|i| lines.get(i)).map_or("", |l| l.1.as_str());
     let y = (y + 34.0).min(b - 36.0);
     g.text(text(i), &g.f.center, [l, y, r, y + 20.0], WHITE);

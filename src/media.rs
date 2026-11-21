@@ -9,7 +9,6 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering::Relaxed},
         mpsc::{self, Sender},
     },
     thread,
@@ -59,7 +58,6 @@ impl Media {
 }
 
 pub static MEDIA: Mutex<Option<Media>> = Mutex::new(None);
-pub static SHOW_LYRICS: AtomicBool = AtomicBool::new(true);
 
 type Cache = HashMap<String, Option<Arc<Vec<Line>>>>;
 
@@ -140,7 +138,7 @@ fn read(s: &Session, cache: &mut Cache, tx: &Sender<Msg>) -> Result<Media> {
 
     // tanpa durasi berarti pemutar tidak melaporkan timeline, jadi lirik tidak bisa disinkronkan
     let dur_s = dur_ms / 1000;
-    let lyrics = if dur_s > 0 && !title.is_empty() && SHOW_LYRICS.load(Relaxed) {
+    let lyrics = if dur_s > 0 && !title.is_empty() && crate::settings::flag("ShowLyrics", true) {
         let key = format!("{title}\n{artist}\n{dur_s}");
         match cache.get(&key) {
             Some(found) => found.clone(),

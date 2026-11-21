@@ -1,17 +1,20 @@
 #![windows_subsystem = "windows"]
 //! Ponian: notch untuk Windows.
 
+mod input;
 mod lyrics;
 mod media;
 mod pages;
 mod power;
 mod render;
+mod settings;
 mod state;
 mod tray;
 mod volume;
 
 use media::{Media, Msg};
-use pages::{PAGES, Page};
+use pages::Page;
+use settings::{Item, Section, opts};
 use render::{DIM, GRAY, GREEN, Gfx, R, WHITE};
 use state::{Inputs, Timer, View};
 use std::{
@@ -23,8 +26,9 @@ use windows::{
     Win32::{
         Foundation::*,
         System::{Diagnostics::Debug::MessageBeep, LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime, Threading::CreateMutexW},
+        Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO},
         UI::{
-            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext},
+            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext},
             Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
             WindowsAndMessaging::*,
         },
@@ -35,6 +39,7 @@ use windows::{
 pub const WM_APP_MEDIA: u32 = WM_APP + 1;
 pub const WM_APP_VOLUME: u32 = WM_APP + 2;
 pub const WM_APP_TRAY: u32 = WM_APP + 3;
+const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 5;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_MOUSEHWHEEL: u32 = 0x020E;
 
@@ -87,7 +92,10 @@ pub struct App {
     user_hidden: bool,
     fullscreen: bool,
     ticking: bool,
+    pages: Vec<Page>,
     page: usize,
+    lyric_offset_ms: i64,
+    hide_fullscreen: bool,
     minute: u16,
     view: View,
     cur: (f32, f32),
@@ -111,6 +119,28 @@ impl App {
 
     fn timer_running(&self) -> bool {
         matches!(self.timer, Timer::Running(_))
+    }
+
+    /// Posisi putar untuk lirik, sudah dimajukan sesuai setting "Majukan lirik".
+    fn lyric_pos(&self) -> i64 {
+        self.media.pos() + self.lyric_offset_ms
+    }
+
+    fn current_page(&self) -> Page {
+        self.pages[self.page.min(self.pages.len() - 1)]
+    }
+
+    /// Baca ulang setting yang dipakai notch.
+    fn reload(&mut self) {
+        let page = self.current_page();
+        self.pages = pages::enabled();
+        self.page = self.pages.iter().position(|p| *p == page).unwrap_or(0);
+        self.lyric_offset_ms = [0, 300, 600, 1000][settings::dword("LyricOffset", 0).min(3) as usize];
+        self.hide_fullscreen = settings::flag("HideFullscreen", true);
+        self.user_hidden = settings::flag("HideNotch", false);
+        if !self.hide_fullscreen {
+            self.fullscreen = false;
+        }
     }
 
     fn target(&self, view: View) -> (f32, f32) {
@@ -217,7 +247,7 @@ impl App {
                 let right = if self.view == View::Compact && remaining.is_some() { 64.0 } else { 40.0 };
                 let center = [x0 + 34.0, 0.0, x1 - right, h];
                 if self.view == View::Compact {
-                    let line = m.lyrics.as_ref().and_then(|l| Some(l[lyrics::active(l, m.pos())?].1.as_str())).filter(|s| !s.is_empty());
+                    let line = m.lyrics.as_ref().and_then(|l| Some(l[lyrics::active(l, self.lyric_pos())?].1.as_str())).filter(|s| !s.is_empty());
                     let track = if m.artist.is_empty() { m.title.clone() } else { format!("{} \u{2014} {}", m.title, m.artist) };
                     g.text(line.unwrap_or(&track), &g.f.center, center, WHITE);
                 } else {
@@ -256,7 +286,7 @@ impl App {
                 None => {}
             },
             View::Expanded => {
-                let page = PAGES[self.page];
+                let page = self.current_page();
                 g.text(page.title(), &g.f.bold, [x0 + 24.0, 8.0, x0 + 190.0, 34.0], WHITE);
                 g.text(&format!("{:02}:{:02}", clock.wHour, clock.wMinute), &g.f.rbold, [x1 - 74.0, 8.0, x1 - 22.0, 34.0], WHITE);
                 let date = state::date_id(clock.wDayOfWeek, clock.wDay, clock.wMonth, clock.wYear);
@@ -267,14 +297,15 @@ impl App {
 
                 page.draw(self, g, [x0 + 32.0, 42.0, x1 - 32.0, 148.0], buttons);
 
-                if PAGES.len() > 1 {
+                let n = self.pages.len();
+                if n > 1 {
                     for (glyph, x, action) in [("\u{E76B}", x0 + 6.0, Action::PrevPage), ("\u{E76C}", x1 - 28.0, Action::NextPage)] {
                         let btn = [x, 78.0, x + 22.0, 112.0];
                         g.text(glyph, &g.f.icon_small, btn, DIM);
                         buttons.push((btn, action));
                     }
-                    let widths: Vec<f32> = (0..PAGES.len()).map(|i| if i == self.page { 16.0 } else { 5.0 }).collect();
-                    let total = widths.iter().sum::<f32>() + 5.0 * (PAGES.len() - 1) as f32;
+                    let widths: Vec<f32> = (0..n).map(|i| if i == self.page { 16.0 } else { 5.0 }).collect();
+                    let total = widths.iter().sum::<f32>() + 5.0 * (n - 1) as f32;
                     let mut x = cx - total / 2.0;
                     for (i, w) in widths.into_iter().enumerate() {
                         g.rrect([x, 158.0, x + w, 163.0], 2.5, if i == self.page { WHITE } else { DIM });
@@ -305,17 +336,24 @@ impl App {
     }
 
     fn turn(&mut self, by: isize) {
-        self.page = (self.page as isize + by).rem_euclid(PAGES.len() as isize) as usize;
+        self.page = (self.page as isize + by).rem_euclid(self.pages.len() as isize) as usize;
     }
 
-    /// Letakkan window di tengah-atas monitor utama dan buat ulang permukaan gambar untuk DPI sekarang.
+    /// Letakkan window di tengah-atas monitor pilihan dan buat ulang permukaan gambar untuk DPI dan ukuran sekarang.
     fn place(hwnd: HWND) -> Result<(Gfx, f32)> {
         unsafe {
-            let dpi = GetDpiForWindow(hwnd).max(96) as f32;
+            let monitors = monitors();
+            let pick = settings::dword("Monitor", 0) as usize;
+            // indeks 0 = monitor utama; monitor yang sudah dicabut kembali ke monitor utama
+            let (mon, rc) = monitors.get(pick).or(monitors.first()).map_or((HMONITOR::default(), RECT::default()), |m| (m.0, m.1));
+            let (mut dpi, mut _y) = (96u32, 0u32);
+            let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dpi, &mut _y);
+            let size = [0.9, 1.0, 1.15, 1.3][settings::dword("Size", 1).min(3) as usize];
+            let dpi = dpi.max(96) as f32 * size;
             let scale = dpi / 96.0;
             let (w, h) = ((WIN.0 * scale).ceil() as i32, (WIN.1 * scale).ceil() as i32);
-            let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-            SetWindowPos(hwnd, Some(HWND_TOPMOST), x, 0, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)?;
+            let x = rc.left + (rc.right - rc.left - w) / 2;
+            SetWindowPos(hwnd, Some(HWND_TOPMOST), x, rc.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)?;
             Ok((Gfx::new(w, h, dpi)?, scale))
         }
     }
@@ -352,14 +390,14 @@ impl App {
                     T_TICK => {
                         if self.timer.tick(Instant::now()) {
                             let _ = MessageBeep(MB_ICONASTERISK);
-                            self.page = PAGES.iter().position(|p| *p == Page::Timer).unwrap_or(0);
+                            self.page = self.pages.iter().position(|p| *p == Page::Timer).unwrap_or(self.page);
                             self.update();
                         } else if self.anim_start.is_none() && self.view != View::Hidden {
                             self.draw();
                         }
                     }
                     T_POLL => {
-                        let fullscreen = power::fullscreen();
+                        let fullscreen = self.hide_fullscreen && power::fullscreen();
                         let minute = GetLocalTime().wMinute;
                         if fullscreen != self.fullscreen {
                             self.fullscreen = fullscreen;
@@ -401,6 +439,14 @@ impl App {
                         _ => self.draw(),
                     }
                 }
+                settings::WM_APP_SETTINGS => {
+                    self.reload();
+                    let _ = self.tx.send(Msg::Refresh);
+                    if let Ok((gfx, scale)) = Self::place(self.hwnd) {
+                        (self.gfx, self.scale) = (gfx, scale);
+                    }
+                    self.update();
+                }
                 WM_DISPLAYCHANGE | WM_DPICHANGED => {
                     if let Ok((gfx, scale)) = Self::place(self.hwnd) {
                         (self.gfx, self.scale) = (gfx, scale);
@@ -430,29 +476,71 @@ fn wave(g: &Gfx, cx: f32, cy: f32) {
     }
 }
 
-fn tray_menu(hwnd: HWND) {
-    let lyrics = media::SHOW_LYRICS.load(Relaxed);
-    let hidden = tray::get(tray::HIDE_NOTCH, false);
-    // menu menjalankan message loop sendiri, jadi APP tidak boleh sedang dipinjam di sini
-    let cmd = tray::menu(hwnd, lyrics, hidden);
-    APP.with_borrow_mut(|app| {
-        let Some(app) = app else { return };
-        match cmd {
-            tray::CMD_AUTOSTART => tray::set_autostart(!tray::autostart()),
-            tray::CMD_LYRICS => {
-                media::SHOW_LYRICS.store(!lyrics, Relaxed);
-                tray::set(tray::SHOW_LYRICS, !lyrics);
-                let _ = app.tx.send(Msg::Refresh);
-            }
-            tray::CMD_HIDE => {
-                tray::set(tray::HIDE_NOTCH, !hidden);
-                app.user_hidden = !hidden;
-                app.update();
-            }
-            tray::CMD_QUIT => drop(unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }),
-            _ => {}
+/// Monitor yang tersambung: monitor utama selalu di urutan pertama.
+fn monitors() -> Vec<(HMONITOR, RECT, bool)> {
+    extern "system" fn each(mon: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
+        let list = unsafe { &mut *(data.0 as *mut Vec<(HMONITOR, RECT, bool)>) };
+        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if unsafe { GetMonitorInfoW(mon, &mut info) }.as_bool() {
+            list.push((mon, info.rcMonitor, info.dwFlags & MONITORINFOF_PRIMARY != 0));
         }
-    });
+        TRUE
+    }
+    let mut list: Vec<(HMONITOR, RECT, bool)> = Vec::new();
+    let _ = unsafe { EnumDisplayMonitors(None, None, Some(each), LPARAM(&mut list as *mut _ as isize)) };
+    list.sort_by_key(|m| (!m.2, m.1.left, m.1.top));
+    list
+}
+
+/// Isi jendela Pengaturan. Tiap fitur menambahkan bagiannya di sini.
+fn sections() -> Vec<Section> {
+    let mut page_items: Vec<Item> = pages::ALL.iter().map(|p| Item::Check(p.key(), p.title(), true)).collect();
+    page_items.insert(0, Item::Note("Halaman yang tampil saat notch dibuka. Gulir roda mouse atau klik panah untuk berpindah."));
+    vec![
+        Section {
+            name: "Umum",
+            items: vec![
+                Item::Check(settings::AUTOSTART, "Jalankan saat Windows menyala", false),
+                Item::Check("HideFullscreen", "Sembunyikan saat ada app layar penuh (game, video, presentasi)", true),
+                Item::Check("HideNotch", "Sembunyikan notch", false),
+            ],
+        },
+        Section {
+            name: "Tampilan",
+            items: vec![
+                Item::Choice("Size", "Ukuran notch", || opts(&["Kecil", "Sedang", "Besar", "Sangat besar"]), 1),
+                Item::Choice(
+                    "Monitor",
+                    "Layar",
+                    || monitors().iter().enumerate().map(|(i, m)| format!("Layar {}{}", i + 1, if m.2 { " (utama)" } else { "" })).collect(),
+                    0,
+                ),
+            ],
+        },
+        Section {
+            name: "Musik",
+            items: vec![
+                Item::Check("ShowLyrics", "Tampilkan lirik", true),
+                Item::Note("Lirik diambil dari LRCLIB (lrclib.net). Judul dan artis lagu dikirim ke sana."),
+                Item::Choice("LyricOffset", "Majukan lirik", || opts(&["Mati", "0,3 detik", "0,6 detik", "1 detik"]), 0),
+            ],
+        },
+        Section { name: "Halaman", items: page_items },
+    ]
+}
+
+fn tray_menu(hwnd: HWND) {
+    let hidden = settings::flag("HideNotch", false);
+    // menu menjalankan message loop sendiri, jadi APP tidak boleh sedang dipinjam di sini
+    match tray::menu(hwnd, hidden) {
+        tray::CMD_SETTINGS => settings::open(),
+        tray::CMD_HIDE => {
+            settings::set_dword("HideNotch", !hidden as u32);
+            let _ = unsafe { PostMessageW(Some(hwnd), settings::WM_APP_SETTINGS, WPARAM(0), LPARAM(0)) };
+        }
+        tray::CMD_QUIT => drop(unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }),
+        _ => {}
+    }
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -469,9 +557,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             // klik pada notch tidak boleh mengambil fokus dari app yang sedang dipakai
             WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+            WM_APP_OPEN_SETTINGS => {
+                settings::open();
+                return LRESULT(0);
+            }
             WM_APP_TRAY => {
-                if matches!(lp.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP) {
-                    tray_menu(hwnd);
+                match lp.0 as u32 {
+                    WM_LBUTTONDBLCLK => settings::open(),
+                    WM_LBUTTONUP | WM_RBUTTONUP => tray_menu(hwnd),
+                    _ => {}
                 }
                 return LRESULT(0);
             }
@@ -493,7 +587,12 @@ fn main() -> Result<()> {
     unsafe {
         // satu instance saja; autostart dan klik manual bisa bertabrakan
         let _instance = CreateMutexW(None, true, w!("Ponian.SingleInstance"))?;
+        let open_settings = std::env::args().any(|a| a == "--settings");
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            // instance kedua dengan --settings meminta instance yang berjalan membuka Pengaturan
+            if open_settings && let Ok(running) = FindWindowW(w!("Ponian"), None) {
+                let _ = PostMessageW(Some(running), WM_APP_OPEN_SETTINGS, WPARAM(0), LPARAM(0));
+            }
             return Ok(());
         }
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -516,7 +615,8 @@ fn main() -> Result<()> {
             None,
         )?;
         let (gfx, scale) = App::place(hwnd)?;
-        media::SHOW_LYRICS.store(tray::get(tray::SHOW_LYRICS, true), Relaxed);
+        settings::NOTCH.store(hwnd.0 as isize, Relaxed);
+        let _ = settings::SECTIONS.set(sections);
         tray::add(hwnd);
         SetTimer(Some(hwnd), T_POLL, 1000, None);
 
@@ -532,10 +632,13 @@ fn main() -> Result<()> {
             plugged: power::status().map(|s| s.0),
             inside: false,
             hover: false,
-            user_hidden: tray::get(tray::HIDE_NOTCH, false),
+            user_hidden: false,
             fullscreen: false,
             ticking: false,
+            pages: vec![Page::Music],
             page: 0,
+            lyric_offset_ms: 0,
+            hide_fullscreen: true,
             minute: GetLocalTime().wMinute,
             view: View::Idle,
             cur: (IDLE.0, 0.0),
@@ -548,8 +651,12 @@ fn main() -> Result<()> {
         };
         // mulai dari tinggi 0 supaya notch "turun" dari tepi layar saat app dibuka
         app.view = View::Hidden;
+        app.reload();
         app.update();
         APP.set(Some(app));
+        if open_settings {
+            settings::open();
+        }
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {

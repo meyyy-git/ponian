@@ -56,7 +56,8 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
 
     // tombol lirik: menyalakan atau mematikan lirik di pill
     let lyrics_on = app.lyrics_on;
-    g.text("\u{E8BD}", &g.f.icon, hit(l + 30.0, 16.0), if !lyrics_on { DIM } else if m.lyrics.is_some() { ACCENT } else { WHITE });
+    // not dengan baris teks ("info musik"), bukan balon percakapan
+    g.text("\u{E90B}", &g.f.icon, hit(l + 30.0, 16.0), if !lyrics_on { DIM } else if m.lyrics.is_some() { ACCENT } else { WHITE });
     buttons.push((hit(l + 30.0, 16.0), Action::LyricsToggle));
 
     // mundur dan maju: dua segitiga berdampingan

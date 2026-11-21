@@ -2,6 +2,7 @@
 name = "ponian"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 windows-core = "0.62.2"

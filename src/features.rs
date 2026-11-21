@@ -1,8 +1,8 @@
 //! Perilaku fitur di notch: aksi tombol, pengingat per menit, dan data harian.
 use crate::{
-    Action, Alert, App, Hud, clock, input, location,
+    Action, Alert, App, Hud, ai, clock, currency, input, location,
     media::Msg,
-    notify,
+    notify, ocr, online,
     pages::Page,
     pomodoro::{Durations, Phase},
     prayer, settings, shelf, store, system,
@@ -17,6 +17,33 @@ use windows::Win32::{
 };
 
 pub const INPUT_TODO: usize = 1;
+pub const INPUT_ASK: usize = 2;
+pub const INPUT_TRANSLATE: usize = 3;
+pub const INPUT_KEY: usize = 4;
+
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum Job {
+    #[default]
+    Ask,
+    Translate,
+    Verify,
+}
+
+/// Percakapan di halaman Tanya.
+#[derive(Default)]
+pub struct AskState {
+    /// (dari user?, teks), urut dari yang lama
+    pub history: Vec<(bool, String)>,
+    pub thinking: bool,
+    pub translate: bool,
+    pub error: Option<String>,
+    /// teks dari Smart OCR yang bisa ditanyakan
+    pub context: Option<String>,
+    pub job: Job,
+}
+
+/// Jawaban Gemini dari thread pekerja.
+pub static AI_RESULT: std::sync::Mutex<Option<Result<String, String>>> = std::sync::Mutex::new(None);
 
 #[derive(Clone, Copy, Default)]
 pub struct WaterCfg {
@@ -51,6 +78,7 @@ impl App {
         };
         self.sound = settings::flag("Sound", true);
         self.notify_preview = settings::flag("Notify.Preview", false);
+        self.has_key = settings::secret("Gemini").is_some();
         self.widgets = (settings::dword("Widget.Left", 0) as usize, settings::dword("Widget.Right", 1) as usize);
         self.cities = (settings::dword("Clock.City1", 5) as usize, settings::dword("Clock.City2", 10) as usize);
         self.compute_prayer();
@@ -315,6 +343,98 @@ impl App {
                     self.info("\u{E8C8}", "Disalin ke clipboard".into(), 1500);
                 }
             }
+            Action::AskOpen(translate) => self.open_ask_input(if translate { INPUT_TRANSLATE } else { INPUT_ASK }),
+            Action::AskKey => self.open_ask_input(INPUT_KEY),
+            Action::AskCopy => {
+                if let Some((false, answer)) = self.ask.history.last().cloned() {
+                    shelf::write_text(self.hwnd, &answer);
+                    self.info("\u{E8C8}", "Jawaban disalin".into(), 1500);
+                }
+            }
+            Action::AskClear => self.ask = AskState::default(),
+        }
+    }
+
+    /// Kotak teks di bagian bawah notch untuk halaman Tanya.
+    pub fn open_ask_input(&mut self, id: usize) {
+        if let Some(i) = self.pages.iter().position(|p| *p == Page::Ask) {
+            self.page = i;
+        }
+        self.update();
+        let mut wr = RECT::default();
+        let _ = unsafe { GetWindowRect(self.hwnd, &mut wr) };
+        let cx = crate::WIN.0 / 2.0;
+        let bottom = crate::ASK_HEIGHT - 14.0;
+        let px = |x: f32| (x * self.scale) as i32;
+        let rect = RECT { left: wr.left + px(cx - 172.0), top: wr.top + px(bottom - 32.0), right: wr.left + px(cx + 172.0), bottom: wr.top + px(bottom) };
+        let hint = match id {
+            INPUT_KEY => "Tempel API key Gemini (Ctrl+V) lalu Enter",
+            INPUT_TRANSLATE => "Teks yang mau diterjemahkan",
+            _ if self.has_key => "Tanya apa saja \u{B7} Tab untuk terjemahkan",
+            _ => "Hitung cepat, misalnya 12,5 x 4 =",
+        };
+        input::open(self.hwnd, id, rect, self.scale, "", hint);
+    }
+
+    /// Jawab langsung tanpa internet kalau teks diakhiri "=": kurs atau hitungan.
+    fn local_answer(&self, text: &str) -> Option<String> {
+        if !text.trim_end().ends_with('=') {
+            return None;
+        }
+        if let Some((amount, from, to)) = currency::parse_query(text) {
+            let main = currency::MAIN[(settings::dword("Rates.Main", 0) as usize).min(currency::MAIN.len() - 1)];
+            let to = to.unwrap_or_else(|| main.to_string());
+            let rates = online::RATES.lock().unwrap().clone();
+            return Some(match rates.and_then(|r| currency::convert(&r, amount, &from, &to)) {
+                Some(v) => format!("{} {from} = {}", ai::format_number(amount), currency::format(v, &to)),
+                None => "Kurs belum tersedia. Pastikan internet tersambung dan kurs aktif di Pengaturan.".into(),
+            });
+        }
+        ai::calc(text).map(|v| format!("= {}", ai::format_number(v)))
+    }
+
+    fn start_ai(&mut self, job: Job, history: Vec<(bool, String)>) {
+        let Some(key) = settings::secret("Gemini") else { return };
+        (self.ask.thinking, self.ask.error, self.ask.job, self.ask.translate) = (true, None, job, job == Job::Translate);
+        let notch = self.hwnd.0 as isize;
+        std::thread::spawn(move || {
+            let _ = unsafe { windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED) };
+            let result = match job {
+                Job::Verify => ai::model(&key).map(|_| "Key tersimpan. Sekarang tanya apa saja!".to_string()),
+                Job::Translate => ai::ask(&key, &history, ai::TRANSLATE_PROMPT),
+                Job::Ask => ai::ask(&key, &history, ai::ASK_PROMPT),
+            };
+            *AI_RESULT.lock().unwrap() = Some(result);
+            let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(windows::Win32::Foundation::HWND(notch as _)), crate::WM_APP_AI, windows::Win32::Foundation::WPARAM(0), windows::Win32::Foundation::LPARAM(0)) };
+        });
+    }
+
+    pub fn on_ai(&mut self) {
+        let Some(result) = AI_RESULT.lock().unwrap().take() else { return };
+        self.ask.thinking = false;
+        match (result, self.ask.job) {
+            (Ok(text), Job::Verify) => self.ask.history = vec![(false, text)],
+            (Ok(text), _) => self.ask.history.push((false, text)),
+            (Err(e), Job::Verify) => {
+                // key yang ditolak tidak disimpan
+                settings::set_secret("Gemini", "");
+                self.has_key = false;
+                self.ask.error = Some(e);
+            }
+            (Err(e), _) => self.ask.error = Some(e),
+        }
+    }
+
+    pub fn on_ocr(&mut self) {
+        let Some(result) = ocr::RESULT.lock().unwrap().take() else { return };
+        match result {
+            Ok(text) => {
+                shelf::write_text(self.hwnd, &text);
+                self.ask.context = Some(text);
+                let tip = if self.has_key { " \u{B7} buka Tanya untuk menanyakannya" } else { "" };
+                self.info("\u{E8C8}", format!("Teks dari layar disalin{tip}"), 4000);
+            }
+            Err(e) => self.info("\u{E7BA}", e, 4000),
         }
     }
 
@@ -329,7 +449,66 @@ impl App {
 
     pub fn on_input(&mut self, id: usize, result: isize) {
         let Some(text) = input::take_text() else { return };
-        if result != input::SUBMIT || id != INPUT_TODO {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        // Tab di kotak Tanya: terjemahkan teks yang sedang diketik
+        let id = if result == input::TAB && id == INPUT_ASK { INPUT_TRANSLATE } else { id };
+        if result == input::TAB {
+            input::close();
+        } else if result != input::SUBMIT {
+            return;
+        }
+        match id {
+            INPUT_KEY => {
+                if ai::looks_like_key(&text) {
+                    settings::set_secret("Gemini", &text);
+                    settings::set_string("Gemini.Model", "");
+                    self.has_key = true;
+                    self.start_ai(Job::Verify, Vec::new());
+                } else {
+                    self.ask.error = Some("Itu tidak terlihat seperti API key. Salin key-nya saja, lalu tempel lagi.".into());
+                }
+                return;
+            }
+            INPUT_ASK => {
+                if let Some(answer) = self.local_answer(&text) {
+                    self.ask.error = None;
+                    self.ask.history.extend([(true, text), (false, answer)]);
+                    return;
+                }
+                if !self.has_key {
+                    self.ask.error = Some("Untuk bertanya ke AI, tempel API key Gemini dulu.".into());
+                    return;
+                }
+                // pertanyaan pertama tentang teks dari layar membawa teks itu
+                let message = match (&self.ask.context, self.ask.history.is_empty()) {
+                    (Some(ctx), true) => format!("Ini teks yang saya salin dari layar:\n{ctx}\n\n{text}"),
+                    _ => text.clone(),
+                };
+                self.ask.history.push((true, text));
+                let mut convo = self.ask.history.clone();
+                if let Some(last) = convo.last_mut() {
+                    last.1 = message;
+                }
+                // percakapan dibatasi 12 pesan terakhir supaya permintaan tetap kecil
+                let skip = convo.len().saturating_sub(12);
+                self.start_ai(Job::Ask, convo[skip..].to_vec());
+                return;
+            }
+            INPUT_TRANSLATE => {
+                if !self.has_key {
+                    self.ask.error = Some("Terjemahan memakai Gemini; tempel API key dulu.".into());
+                    return;
+                }
+                self.ask.history = vec![(true, text.clone())];
+                self.start_ai(Job::Translate, vec![(true, text)]);
+                return;
+            }
+            _ => {}
+        }
+        if id != INPUT_TODO {
             return;
         }
         let Some((title, time)) = todo::parse(&text) else { return };

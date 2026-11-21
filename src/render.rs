@@ -38,6 +38,8 @@ pub struct Fonts {
     pub big: IDWriteTextFormat,
     pub icon: IDWriteTextFormat,
     pub icon_small: IDWriteTextFormat,
+    /// paragraf yang dibungkus ke baris berikutnya, rata atas
+    pub para: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -109,6 +111,12 @@ impl Gfx {
                 // font ikon bawaan Windows 10 dan 11
                 icon: font(mdl, 15.0, normal, center)?,
                 icon_small: font(mdl, 9.0, normal, center)?,
+                para: {
+                    let p = font(ui, 13.0, normal, left)?;
+                    p.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+                    p.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+                    p
+                },
             };
             Ok(Self { factory, rt, brush, f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h } })
         }

@@ -6,7 +6,10 @@ use windows::{
     Win32::{
         Foundation::*,
         Graphics::{Dwm::*, Gdi::*},
-        System::LibraryLoader::GetModuleHandleW,
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            Threading::{AttachThreadInput, GetCurrentThreadId},
+        },
         UI::{
             Controls::EM_SETSEL,
             Input::KeyboardAndMouse::{SetFocus, VK_ESCAPE, VK_RETURN, VK_TAB},
@@ -33,6 +36,8 @@ struct Input {
     id: usize,
     brush: HBRUSH,
     font: HFONT,
+    /// jendela yang aktif sebelum kotak teks dibuka
+    previous: HWND,
 }
 
 thread_local! {
@@ -91,9 +96,19 @@ pub fn open(owner: HWND, id: usize, rect: RECT, scale: f32, initial: &str, place
         SendMessageW(edit, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(cue.as_ptr() as isize)));
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(initial.len())), Some(LPARAM(initial.len() as isize)));
         let _ = SetWindowSubclass(edit, Some(edit_proc), 1, 0);
-        INPUT.set(Some(Input { popup, edit, owner, id, brush, font }));
+        let previous = GetForegroundWindow();
+        INPUT.set(Some(Input { popup, edit, owner, id, brush, font, previous }));
         let _ = ShowWindow(popup, SW_SHOW);
-        let _ = SetForegroundWindow(popup);
+        // Windows bisa menolak SetForegroundWindow dari app yang tidak aktif; kalau ditolak, menumpang
+        // antrean input app yang sedang aktif sebentar membuat perpindahan fokus diizinkan.
+        if !SetForegroundWindow(popup).as_bool() || GetForegroundWindow() != popup {
+            let (me, other) = (GetCurrentThreadId(), GetWindowThreadProcessId(previous, None));
+            let attached = other != 0 && other != me && AttachThreadInput(me, other, true).as_bool();
+            let _ = SetForegroundWindow(popup);
+            if attached {
+                let _ = AttachThreadInput(me, other, false);
+            }
+        }
         let _ = SetFocus(Some(edit));
     }
 }
@@ -101,6 +116,10 @@ pub fn open(owner: HWND, id: usize, rect: RECT, scale: f32, initial: &str, place
 pub fn close() {
     let Some(i) = INPUT.take() else { return };
     unsafe {
+        // kembalikan fokus ke app yang tadi dipakai
+        if GetForegroundWindow() == i.popup && !i.previous.is_invalid() {
+            let _ = SetForegroundWindow(i.previous);
+        }
         let _ = DestroyWindow(i.popup);
         let _ = DeleteObject(i.brush.into());
         let _ = DeleteObject(i.font.into());
@@ -153,6 +172,13 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
             WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => {
                 if is_open() {
                     finish(CANCEL);
+                }
+                LRESULT(0)
+            }
+            // begitu jendela pembungkus aktif, fokus keyboard diteruskan ke kontrol teks
+            WM_ACTIVATE | WM_SETFOCUS => {
+                if let Some(edit) = INPUT.with_borrow(|i| i.as_ref().map(|i| i.edit)) {
+                    let _ = SetFocus(Some(edit));
                 }
                 LRESULT(0)
             }

@@ -33,6 +33,7 @@ pub enum Msg {
     Prev,
     Toggle,
     Next,
+    Pause,
     Lyrics(String, Option<Arc<Vec<Line>>>),
     AudioDevice,
 }
@@ -95,6 +96,7 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
             Msg::Prev => drop(session.as_ref().map(|s| s.TrySkipPreviousAsync())),
             Msg::Toggle => drop(session.as_ref().map(|s| s.TryTogglePlayPauseAsync())),
             Msg::Next => drop(session.as_ref().map(|s| s.TrySkipNextAsync())),
+            Msg::Pause => drop(session.as_ref().map(|s| s.TryPauseAsync())),
             Msg::Lyrics(key, lines) => drop(cache.insert(key, lines)),
             Msg::AudioDevice => {
                 if let Some(v) = &mut volume {

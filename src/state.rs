@@ -1,5 +1,5 @@
 //! Logika murni: bentuk notch, animasi, timer, dan format tanggal. Tidak menyentuh API Windows supaya bisa diuji.
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum View {
@@ -30,35 +30,6 @@ pub fn view(i: Inputs) -> View {
         View::Compact
     } else {
         View::Idle
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Timer {
-    Off,
-    Running(Instant),
-    Ringing,
-}
-
-impl Timer {
-    pub fn start(minutes: u64, now: Instant) -> Self {
-        Timer::Running(now + Duration::from_secs(minutes * 60))
-    }
-
-    /// Mengembalikan true tepat saat timer habis.
-    pub fn tick(&mut self, now: Instant) -> bool {
-        let done = matches!(*self, Timer::Running(end) if now >= end);
-        if done {
-            *self = Timer::Ringing;
-        }
-        done
-    }
-
-    pub fn remaining(&self, now: Instant) -> Option<Duration> {
-        match self {
-            Timer::Running(end) => Some(end.saturating_duration_since(now)),
-            _ => None,
-        }
     }
 }
 
@@ -107,18 +78,6 @@ mod tests {
         assert_eq!(view(Inputs { hud: true, hover: true, ..i }), View::Expanded);
         assert_eq!(view(Inputs { ringing: true, ..i }), View::Expanded);
         assert_eq!(view(Inputs { ringing: true, hover: true, hidden: true, ..i }), View::Hidden);
-    }
-
-    #[test]
-    fn timer_lifecycle() {
-        let t0 = Instant::now();
-        let mut t = Timer::start(5, t0);
-        assert_eq!(t.remaining(t0), Some(Duration::from_secs(300)));
-        assert!(!t.tick(t0 + Duration::from_secs(299)));
-        assert!(t.tick(t0 + Duration::from_secs(300)));
-        assert_eq!(t, Timer::Ringing);
-        assert!(!t.tick(t0 + Duration::from_secs(301)));
-        assert_eq!(t.remaining(t0), None);
     }
 
     #[test]

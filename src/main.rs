@@ -1,22 +1,34 @@
 #![windows_subsystem = "windows"]
 //! Ponian: notch untuk Windows.
 
+mod astro;
+mod clock;
+mod features;
 mod input;
+mod location;
 mod lyrics;
 mod media;
 mod pages;
+mod pomodoro;
 mod power;
+mod prayer;
 mod render;
 mod settings;
 mod state;
+mod store;
+mod todo;
 mod tray;
 mod volume;
+mod water;
+mod worldclock;
 
+use features::WaterCfg;
 use media::{Media, Msg};
 use pages::Page;
+use pomodoro::{Durations, Pomo, Run};
+use render::{ACCENT, CHIP, DIM, GRAY, GREEN, Gfx, R, WHITE};
 use settings::{Item, Section, opts};
-use render::{DIM, GRAY, GREEN, Gfx, R, WHITE};
-use state::{Inputs, Timer, View};
+use state::{Inputs, View};
 use std::{
     cell::RefCell,
     sync::{atomic::Ordering::Relaxed, mpsc::Sender},
@@ -25,7 +37,7 @@ use std::{
 use windows::{
     Win32::{
         Foundation::*,
-        System::{Diagnostics::Debug::MessageBeep, LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime, Threading::CreateMutexW},
+        System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime, Threading::CreateMutexW},
         Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO},
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext},
@@ -60,21 +72,36 @@ const T_POLL: usize = 3;
 const T_HOVER: usize = 4;
 const T_HUD: usize = 5;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Hud {
     Volume,
     Power(bool, u8),
     Track,
+    Alert,
+}
+
+/// Peringatan yang tetap tampil sampai diklik (pengingat tugas, minum air, waktu salat).
+pub struct Alert {
+    icon: &'static str,
+    text: String,
+    /// judul tugas, kalau peringatan ini bisa ditunda
+    task: Option<String>,
 }
 
 #[derive(Clone, Copy)]
 pub enum Action {
     Media(fn() -> Msg),
-    Timer(u64),
-    StopTimer,
     Page(usize),
     PrevPage,
     NextPage,
+    PomoToggle,
+    PomoReset,
+    TodoAdd,
+    TodoToggle(usize),
+    TodoDelete(usize),
+    WaterAdd,
+    WaterUndo,
+    Snooze,
 }
 
 pub struct App {
@@ -84,7 +111,22 @@ pub struct App {
     tx: Sender<Msg>,
     media: Media,
     last_track: String,
-    timer: Timer,
+    pomo: Pomo,
+    durations: Durations,
+    tasks: Vec<todo::Task>,
+    today: i64,
+    water: u32,
+    water_cfg: WaterCfg,
+    /// menit terakhir pengingat minum air hari ini
+    water_reminded: u32,
+    /// menit sejak tengah malam untuk tiap waktu salat hari ini
+    prayer: Option<[u32; 6]>,
+    prayer_info: String,
+    prayer_done: String,
+    alert: Option<Alert>,
+    widgets: (usize, usize),
+    cities: (usize, usize),
+    sound: bool,
     hud: Option<Hud>,
     plugged: Option<bool>,
     inside: bool,
@@ -114,11 +156,12 @@ thread_local! {
 
 impl App {
     fn ringing(&self) -> bool {
-        self.timer == Timer::Ringing
+        self.pomo.run == Run::Ringing
     }
 
-    fn timer_running(&self) -> bool {
-        matches!(self.timer, Timer::Running(_))
+    /// Sisa waktu Pomodoro untuk pill kecil, selama sedang berjalan atau dijeda.
+    fn pomo_remaining(&self) -> Option<String> {
+        matches!(self.pomo.run, Run::Running(_) | Run::Paused(_)).then(|| state::mmss(self.pomo.remaining(Instant::now(), self.durations)))
     }
 
     /// Posisi putar untuk lirik, sudah dimajukan sesuai setting "Majukan lirik".
@@ -141,6 +184,7 @@ impl App {
         if !self.hide_fullscreen {
             self.fullscreen = false;
         }
+        self.reload_features();
     }
 
     fn target(&self, view: View) -> (f32, f32) {
@@ -150,9 +194,10 @@ impl App {
             View::Hidden => (IDLE.0, 0.0),
             View::Idle => (IDLE.0 + peek.0, IDLE.1 + peek.1),
             View::Compact => {
-                let w = if m.lyrics.is_some() { 360.0 } else { 280.0 } + if self.timer_running() { 54.0 } else { 0.0 };
+                let w = if m.lyrics.is_some() { 360.0 } else { 280.0 } + if self.pomo_remaining().is_some() { 54.0 } else { 0.0 };
                 (w + peek.0, IDLE.1 + peek.1)
             }
+            View::Hud if self.hud == Some(Hud::Alert) => (380.0, 38.0),
             View::Hud => (300.0, 34.0),
             View::Expanded => EXPANDED,
         }
@@ -163,7 +208,8 @@ impl App {
         let playing = self.media.session && self.media.playing;
         let view = state::view(Inputs {
             hidden: self.user_hidden || self.fullscreen,
-            hover: self.hover,
+            // kotak teks yang terbuka menahan notch tetap terbuka
+            hover: self.hover || input::is_open(),
             ringing: self.ringing(),
             hud: self.hud.is_some(),
             playing,
@@ -176,7 +222,7 @@ impl App {
                 self.anim_start = Some(Instant::now());
                 SetTimer(Some(self.hwnd), T_ANIM, 16, None);
             }
-            let need_tick = self.timer != Timer::Off || (playing && self.media.lyrics.is_some());
+            let need_tick = self.pomo.running() || self.ringing() || (playing && self.media.lyrics.is_some());
             if need_tick != self.ticking {
                 self.ticking = need_tick;
                 if need_tick {
@@ -190,8 +236,16 @@ impl App {
     }
 
     fn show_hud(&mut self, hud: Hud) {
+        // HUD biasa tidak boleh menimpa peringatan yang belum dibaca
+        if self.hud == Some(Hud::Alert) && hud != Hud::Alert {
+            return;
+        }
+        self.show_hud_for(hud, HUD_MS);
+    }
+
+    fn show_hud_for(&mut self, hud: Hud, ms: u32) {
         self.hud = Some(hud);
-        unsafe { SetTimer(Some(self.hwnd), T_HUD, HUD_MS, None) };
+        unsafe { SetTimer(Some(self.hwnd), T_HUD, ms, None) };
         self.update();
     }
 
@@ -234,8 +288,7 @@ impl App {
     fn content(&self, cx: f32, buttons: &mut Vec<(R, Action)>) {
         let (g, m) = (&self.gfx, &self.media);
         let (x0, x1, h) = (cx - self.to.0 / 2.0, cx + self.to.0 / 2.0, self.to.1);
-        let now = Instant::now();
-        let remaining = self.timer.remaining(now).map(state::mmss);
+        let remaining = self.pomo_remaining();
         let battery = power::status();
         let clock = unsafe { GetLocalTime() };
 
@@ -283,6 +336,16 @@ impl App {
                     g.text(&track, &g.f.center, [x0 + 34.0, 0.0, x1 - 34.0, h], WHITE);
                     wave(g, x1 - 22.0, h / 2.0);
                 }
+                Some(Hud::Alert) => {
+                    let Some(a) = &self.alert else { return };
+                    g.text(a.icon, &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], ACCENT);
+                    let right = if a.task.is_some() { 100.0 } else { 16.0 };
+                    g.text(&a.text, &g.f.text, [x0 + 44.0, 0.0, x1 - right, h], WHITE);
+                    if a.task.is_some() {
+                        let snooze = features::SNOOZE[(settings::dword("Todo.Snooze", 1) as usize).min(2)];
+                        pages::chip(g, [x1 - 94.0, 7.0, x1 - 12.0, h - 7.0], &format!("Tunda {snooze} mnt"), CHIP, buttons, Action::Snooze);
+                    }
+                }
                 None => {}
             },
             View::Expanded => {
@@ -319,18 +382,15 @@ impl App {
     }
 
     fn click(&mut self, x: f32, y: f32) {
-        // saat timer berbunyi, klik di mana pun pada notch menghentikannya
+        let hit = self.buttons.iter().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]).map(|b| b.1);
+        // saat Pomodoro berbunyi, klik di mana pun pada notch pindah ke fase berikutnya
         if self.ringing() {
-            self.timer = Timer::Off;
-        } else if let Some(&(_, action)) = self.buttons.iter().find(|(b, _)| x >= b[0] && x < b[2] && y >= b[1] && y < b[3]) {
-            match action {
-                Action::Media(msg) => drop(self.tx.send(msg())),
-                Action::Timer(minutes) => self.timer = Timer::start(minutes, Instant::now()),
-                Action::StopTimer => self.timer = Timer::Off,
-                Action::Page(i) => self.page = i,
-                Action::PrevPage => self.turn(-1),
-                Action::NextPage => self.turn(1),
-            }
+            self.pomo.toggle(Instant::now(), self.durations);
+        } else if self.view == View::Hud && self.hud == Some(Hud::Alert) && !matches!(hit, Some(Action::Snooze)) {
+            // klik pada peringatan berarti sudah dibaca
+            (self.alert, self.hud) = (None, None);
+        } else if let Some(action) = hit {
+            self.act(action);
         }
         self.update();
     }
@@ -388,9 +448,7 @@ impl App {
                 WM_TIMER => match wp.0 {
                     T_ANIM => self.draw(),
                     T_TICK => {
-                        if self.timer.tick(Instant::now()) {
-                            let _ = MessageBeep(MB_ICONASTERISK);
-                            self.page = self.pages.iter().position(|p| *p == Page::Timer).unwrap_or(self.page);
+                        if self.pomo_tick() {
                             self.update();
                         } else if self.anim_start.is_none() && self.view != View::Hidden {
                             self.draw();
@@ -399,13 +457,17 @@ impl App {
                     T_POLL => {
                         let fullscreen = self.hide_fullscreen && power::fullscreen();
                         let minute = GetLocalTime().wMinute;
+                        let new_minute = minute != self.minute;
+                        self.minute = minute;
+                        if new_minute {
+                            self.minute_jobs();
+                        }
                         if fullscreen != self.fullscreen {
                             self.fullscreen = fullscreen;
                             self.update();
-                        } else if minute != self.minute && self.view != View::Hidden && self.anim_start.is_none() {
+                        } else if new_minute && self.view != View::Hidden && self.anim_start.is_none() {
                             self.draw();
                         }
-                        self.minute = minute;
                     }
                     T_HOVER => {
                         let _ = KillTimer(Some(self.hwnd), T_HOVER);
@@ -416,7 +478,7 @@ impl App {
                     }
                     T_HUD => {
                         let _ = KillTimer(Some(self.hwnd), T_HUD);
-                        self.hud = None;
+                        (self.hud, self.alert) = (None, None);
                         self.update();
                     }
                     _ => {}
@@ -438,6 +500,17 @@ impl App {
                         Some((plugged, pct)) if self.plugged.replace(plugged) != Some(plugged) => self.show_hud(Hud::Power(plugged, pct)),
                         _ => self.draw(),
                     }
+                }
+                input::WM_APP_INPUT => {
+                    self.on_input(wp.0, lp.0);
+                    // kursor mungkin sudah di luar notch saat kotak teks ditutup
+                    let mut p = POINT::default();
+                    let mut wr = RECT::default();
+                    let _ = (GetCursorPos(&mut p), GetWindowRect(self.hwnd, &mut wr));
+                    if !(p.x >= wr.left && p.x < wr.right && p.y >= wr.top && p.y < wr.bottom) {
+                        (self.inside, self.hover) = (false, false);
+                    }
+                    self.update();
                 }
                 settings::WM_APP_SETTINGS => {
                     self.reload();
@@ -526,7 +599,60 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section { name: "Halaman", items: page_items },
+        Section {
+            name: "Pomodoro",
+            items: vec![
+                Item::Choice("Pomo.Focus", "Fokus", || opts(&["15 menit", "20 menit", "25 menit", "30 menit", "45 menit", "50 menit", "60 menit"]), 2),
+                Item::Choice("Pomo.Short", "Istirahat pendek", || opts(&["3 menit", "5 menit", "10 menit"]), 1),
+                Item::Choice("Pomo.Long", "Istirahat panjang", || opts(&["10 menit", "15 menit", "20 menit", "30 menit"]), 1),
+                Item::Check("Sound", "Bunyi untuk Pomodoro dan semua pengingat", true),
+            ],
+        },
+        Section {
+            name: "To-do",
+            items: vec![
+                Item::Note("Tulis jam di awal atau akhir tugas untuk pengingat, misalnya \u{201C}Rapat 14:30\u{201D}."),
+                Item::Check("Todo.Remind", "Ingatkan saat jam tugas tiba", true),
+                Item::Choice("Todo.Snooze", "Tunda pengingat selama", || opts(&["5 menit", "10 menit", "15 menit"]), 1),
+            ],
+        },
+        Section {
+            name: "Minum air",
+            items: vec![
+                Item::Check("Water.On", "Ingatkan minum air, dibagi rata sepanjang jam aktif", true),
+                Item::Choice("Water.Goal", "Target harian", || opts(&["1.500 ml", "2.000 ml", "2.500 ml", "3.000 ml", "3.500 ml"]), 1),
+                Item::Choice("Water.Glass", "Ukuran gelas", || opts(&["200 ml", "250 ml", "330 ml", "500 ml"]), 1),
+                Item::Choice("Water.From", "Aktif mulai", || (5..=12).map(clock_label).collect(), 3),
+                Item::Choice("Water.Until", "Aktif sampai", || (17..=24).map(clock_label).collect(), 4),
+            ],
+        },
+        Section {
+            name: "Salat",
+            items: vec![
+                Item::Choice("Prayer.Method", "Metode perhitungan", || prayer::METHODS.iter().map(|m| m.name.to_string()).collect(), 0),
+                Item::Check("Prayer.Hanafi", "Asar mazhab Hanafi (bayangan dua kali panjang benda)", false),
+                Item::Check("UseWindowsLocation", "Pakai lokasi Windows (perlu izin lokasi di Pengaturan Windows)", true),
+                Item::Text("Location", "Atau tulis koordinat sendiri: lintang, bujur (contoh: -6.2088, 106.8456)", false),
+                Item::Choice("Prayer.Notify", "Pengingat", || opts(&["Mati", "Saat waktu salat", "10 menit sebelumnya"]), 1),
+                Item::Check("Prayer.Pause", "Jeda musik saat waktu salat", false),
+                Item::Note("Jadwal dihitung di komputer ini dari posisi matahari, tanpa internet."),
+            ],
+        },
+        Section {
+            name: "Widget",
+            items: vec![
+                Item::Choice("Widget.Left", "Widget kiri", pages::widgets::names, 0),
+                Item::Choice("Widget.Right", "Widget kanan", pages::widgets::names, 1),
+                Item::Choice("Clock.City1", "Jam dunia, kota pertama", worldclock::names, 5),
+                Item::Choice("Clock.City2", "Jam dunia, kota kedua", worldclock::names, 10),
+                Item::Text("Countdown", "Hitung mundur: tanggal dan nama acara (contoh: 2027-01-17 Ulang tahun). Kosongkan untuk hari besar terdekat.", false),
+            ],
+        },
     ]
+}
+
+fn clock_label(h: u32) -> String {
+    clock::hhmm(h * 60)
 }
 
 fn tray_menu(hwnd: HWND) {
@@ -627,7 +753,20 @@ fn main() -> Result<()> {
             tx: media::spawn(hwnd.0 as isize),
             media: Media::default(),
             last_track: String::new(),
-            timer: Timer::Off,
+            pomo: Pomo::default(),
+            durations: Durations { focus: 25, short: 5, long: 15 },
+            tasks: Vec::new(),
+            today: 0,
+            water: 0,
+            water_cfg: WaterCfg::default(),
+            water_reminded: 0,
+            prayer: None,
+            prayer_info: String::new(),
+            prayer_done: String::new(),
+            alert: None,
+            widgets: (0, 1),
+            cities: (5, 10),
+            sound: true,
             hud: None,
             plugged: power::status().map(|s| s.0),
             inside: false,
@@ -651,7 +790,10 @@ fn main() -> Result<()> {
         };
         // mulai dari tinggi 0 supaya notch "turun" dari tepi layar saat app dibuka
         app.view = View::Hidden;
+        app.load_data();
         app.reload();
+        app.minute_jobs();
+        location::refresh(hwnd.0 as isize);
         app.update();
         APP.set(Some(app));
         if open_settings {
@@ -660,6 +802,8 @@ fn main() -> Result<()> {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            // TranslateMessage mengubah tombol menjadi karakter (WM_CHAR) untuk kotak teks
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }

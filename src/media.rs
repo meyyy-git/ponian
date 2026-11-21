@@ -154,7 +154,7 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
     }));
     let _ = tx.send(Msg::Net);
     let mut session: Option<Session> = None;
-    // pemutar pilihan user; None = ikut sesi yang dianggap aktif oleh Windows
+    // pemutar yang dipilih user lewat chip di halaman Music; None = aturan otomatis di `pick`
     let mut chosen: Option<windows::core::HSTRING> = None;
     let id = |s: &Option<Session>| s.as_ref().and_then(|s| s.SourceAppUserModelId().ok());
     let mut cache = Cache::new();
@@ -206,9 +206,13 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
             }
         }
         let all: Vec<Session> = manager.GetSessions().into_iter().flatten().collect();
-        // pilihan user dipakai selama pemutarnya masih ada
-        let picked = all.iter().find(|s| chosen.is_some() && s.SourceAppUserModelId().ok() == chosen).cloned();
-        let current = picked.or_else(|| manager.GetCurrentSession().ok());
+        let playing: Vec<bool> = all.iter().map(|s| s.GetPlaybackInfo().and_then(|i| i.PlaybackStatus()).is_ok_and(|status| status == Status::Playing)).collect();
+        let index = |id: &Option<windows::core::HSTRING>| all.iter().position(|s| id.is_some() && s.SourceAppUserModelId().ok() == *id);
+        // pilihan user gugur begitu pemutarnya ditutup
+        if index(&chosen).is_none() {
+            chosen = None;
+        }
+        let current = pick(&playing, index(&chosen), index(&id(&session)), index(&id(&manager.GetCurrentSession().ok()))).map(|i| all[i].clone());
         if id(&current) != id(&session) {
             session = current;
             if let Some(s) = &session {
@@ -223,6 +227,18 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
         let _ = unsafe { PostMessageW(Some(HWND(hwnd as _)), WM_APP_MEDIA, WPARAM(0), LPARAM(0)) };
     }
     Ok(())
+}
+
+/// Pemutar mana yang ditampilkan, sebagai indeks ke daftar pemutar (`playing[i]` = pemutar ke-i sedang
+/// memutar). Tampilan tidak ikut berpindah-pindah mengikuti Windows:
+/// 1. pilihan user menang selama pemutarnya ada;
+/// 2. pemutar yang sedang tampil dipertahankan, kecuali ia berhenti sementara pemutar lain memutar;
+/// 3. baru kemudian pemutar yang sedang memutar, lalu pemutar aktif menurut Windows.
+fn pick(playing: &[bool], chosen: Option<usize>, shown: Option<usize>, system: Option<usize>) -> Option<usize> {
+    chosen
+        .or(shown.filter(|&i| playing[i] || !playing.contains(&true)))
+        .or(playing.iter().position(|&on| on))
+        .or(system)
 }
 
 fn read(s: &Session, cache: &mut Cache, art: &mut (String, Option<Arc<Art>>), reload_art: bool, tx: &Sender<Msg>) -> Result<Media> {
@@ -272,6 +288,23 @@ fn read(s: &Session, cache: &mut Cache, art: &mut (String, Option<Arc<Art>>), re
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shown_player_stays_put() {
+        use super::pick;
+        // dua pemutar sama-sama memutar: yang tampil tetap, walau Windows menunjuk yang lain
+        assert_eq!(pick(&[true, true], None, Some(0), Some(1)), Some(0));
+        // yang tampil dijeda dan tidak ada yang lain memutar: tetap
+        assert_eq!(pick(&[false, false], None, Some(0), Some(1)), Some(0));
+        // yang tampil dijeda, pemutar lain memutar: pindah ke yang memutar
+        assert_eq!(pick(&[false, true], None, Some(0), Some(0)), Some(1));
+        // pilihan user menang, juga saat dijeda
+        assert_eq!(pick(&[false, true], Some(0), Some(1), Some(1)), Some(0));
+        // belum ada yang tampil: yang memutar dulu, lalu pilihan Windows
+        assert_eq!(pick(&[false, true], None, None, Some(0)), Some(1));
+        assert_eq!(pick(&[false, false], None, None, Some(1)), Some(1));
+        assert_eq!(pick(&[], None, None, None), None);
+    }
+
     #[test]
     fn source_names_are_readable() {
         assert_eq!(super::source_name("Spotify.exe"), "Spotify");

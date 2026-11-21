@@ -1189,6 +1189,16 @@ fn sections() -> Vec<Section> {
                 Item::Text("Countdown", "Countdown: date and event name (example: 2027-01-17 Birthday). Leave empty for the nearest holiday.", false),
             ],
         },
+        Section {
+            name: "About", icon: "\u{E946}",
+            items: vec![
+                Item::Header("Ponian", concat!("Version ", env!("CARGO_PKG_VERSION"), " \u{B7} Made by kucingbebal")),
+                Item::Note("Ponian is a Dynamic Island\u{2013}style notch for Windows. It keeps music and synced lyrics, a timer, to-dos, a calendar with Indonesian holidays, prayer times, a file shelf, and system pop-ups in one small pill at the top of your screen."),
+                Item::Note("It is written in Rust and draws with Direct2D, so it stays light on memory and CPU."),
+                Item::Note("Data sources: lyrics from LRCLIB, weather from MET Norway, exchange rates from Frankfurter (European Central Bank), and holidays from Google\u{2019}s public holiday calendar."),
+                Item::Note("Only those lookups leave this computer: the song title and artist for lyrics, and your coordinates for weather. Tasks, shortcuts, clipboard history, and notifications stay here."),
+            ],
+        },
     ]
 }
 

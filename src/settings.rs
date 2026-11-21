@@ -131,6 +131,8 @@ pub enum Item {
     /// kunci, label, rahasia (dienkripsi dan disamarkan)
     Text(&'static str, &'static str, bool),
     Note(&'static str),
+    /// kepala bagian About: logo, nama, dan satu baris keterangan
+    Header(&'static str, &'static str),
     /// sakelar dengan tombol naik/turun: kunci, label, default, fungsi pemindah (indeks item, arah)
     Movable(&'static str, &'static str, bool, fn(usize, i32)),
 }
@@ -336,13 +338,14 @@ fn draw(ui: &mut Ui) {
         Item::Check(..) => full - 50.0,
         Item::Movable(..) => full - 108.0,
         Item::Choice(..) => full - 200.0,
-        Item::Text(..) | Item::Note(_) => full,
+        Item::Text(..) | Item::Note(_) | Item::Header(..) => full,
     };
     let heights: Vec<f32> = sec
         .items
         .iter()
         .map(|item| match item {
             Item::Note(text) => g.height(text, &g.f.wrap, x1 - x0 - 16.0) + 14.0,
+            Item::Header(..) => 76.0,
             Item::Text(_, label, _) => g.height(label, &g.f.wrap, full) + 58.0,
             Item::Check(_, label, _) | Item::Movable(_, label, ..) | Item::Choice(_, label, ..) => (g.height(label, &g.f.wrap, label_w(item)) + 22.0).max(40.0),
         })
@@ -350,7 +353,23 @@ fn draw(ui: &mut Ui) {
     let mut y = VIEW.0 + 2.0 - scroll;
     for (i, item) in sec.items.iter().enumerate() {
         let h = heights[i];
-        let is_note = |n: usize| matches!(sec.items.get(n), Some(Item::Note(_)));
+        // keterangan dan kepala About berdiri sendiri di luar grup
+        let is_note = |n: usize| matches!(sec.items.get(n), Some(Item::Note(_) | Item::Header(..)));
+        if let Item::Header(name, about) = item {
+            // logo kecil seperti ikon aplikasi: kotak biru membulat, notch hitam di atas, batang audio
+            let (lx, ly) = (x0 + 6.0, y + 6.0);
+            g.rrect([lx, ly, lx + 52.0, ly + 52.0], 12.0, ACCENT);
+            g.rrect([lx + 12.0, ly, lx + 40.0, ly + 13.0], 4.5, 0x0a0a0c);
+            g.rrect([lx + 12.0, ly, lx + 40.0, ly + 5.0], 0.0, 0x0a0a0c);
+            for (k, bar) in [3.0, 6.0, 4.5, 2.5].into_iter().enumerate() {
+                let bx = lx + 18.5 + k as f32 * 4.2;
+                g.rrect([bx, ly + 6.5 - bar / 2.0, bx + 2.0, ly + 6.5 + bar / 2.0], 1.0, WHITE);
+            }
+            g.text(name, &g.f.big, [lx + 68.0, ly + 2.0, x1, ly + 34.0], WHITE);
+            g.text(about, &g.f.text, [lx + 68.0, ly + 32.0, x1, ly + 52.0], 0x98989f);
+            y += h;
+            continue;
+        }
         if let Item::Note(text) = item {
             g.text(text, &g.f.wrap, [x0 + 8.0, y + 2.0, x1 - 8.0, y + h], 0x98989f);
             y += h;
@@ -423,7 +442,7 @@ fn draw(ui: &mut Ui) {
                     g.text(&value, &g.f.text, inner, WHITE);
                 }
             }
-            Item::Note(_) => {}
+            Item::Note(_) | Item::Header(..) => {}
         }
         y += h;
         if is_note(i + 1) {

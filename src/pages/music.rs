@@ -1,33 +1,76 @@
 use crate::{
-    Action, App, lyrics,
-    media::Msg,
-    render::{GRAY, Gfx, R, WHITE},
+    Action, App, NOTE,
+    media::{ART, Msg},
+    render::{ACCENT, CARD, DIM, GRAY, Gfx, R, WHITE},
+    settings, volume,
 };
+use std::sync::atomic::Ordering::Relaxed;
 
-pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>) {
+fn mmss(ms: i64) -> String {
+    let s = ms.max(0) / 1000;
+    format!("{:02}:{:02}", s / 60, s % 60)
+}
+
+pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>) {
     let m = &app.media;
-    if !m.session {
-        g.text("Tidak ada media diputar", &g.f.csmall, [l, t, r, b], GRAY);
-        return;
+    // halaman musik tidak punya judul, jadi cover naik ke baris status
+    let top = t - 26.0;
+    let art = [l, top, l + 62.0, top + 62.0];
+    match &m.art {
+        Some(a) => g.image(&a.bgra, ART, art, 11.0),
+        None => {
+            g.rrect(art, 11.0, CARD);
+            g.text(NOTE, &g.f.icon_big, art, DIM);
+        }
     }
-    g.text(&m.title, &g.f.bold, [l, t, r, t + 22.0], WHITE);
-    g.text(&m.artist, &g.f.small, [l, t + 22.0, r, t + 40.0], GRAY);
+    let tx = l + 78.0;
+    if m.session && !m.title.is_empty() {
+        g.text(&m.title, &g.f.bold, [tx, top + 20.0, r, top + 40.0], WHITE);
+        g.text(&m.artist, &g.f.small, [tx, top + 38.0, r, top + 54.0], GRAY);
+    } else {
+        g.text("Tidak ada media", &g.f.bold, [tx, top + 20.0, r, top + 40.0], WHITE);
+    }
 
+    // batang progres dengan waktu berjalan dan sisa waktu; klik untuk melompat
+    let y = top + 85.0;
+    let pos = m.pos().max(0);
+    g.text(&mmss(pos), &g.f.num, [l, y - 11.0, l + 48.0, y + 11.0], WHITE);
+    g.text(&format!("-{}", mmss(m.dur_ms - pos)), &g.f.rnum, [r - 56.0, y - 11.0, r, y + 11.0], WHITE);
+    let (b0, b1) = (l + 54.0, r - 62.0);
+    g.rrect([b0, y - 1.5, b1, y + 1.5], 1.5, 0x4a4a4a);
+    if m.dur_ms > 0 {
+        g.rrect([b0, y - 1.5, b0 + (b1 - b0) * (pos as f32 / m.dur_ms as f32).min(1.0), y + 1.5], 1.5, WHITE);
+        buttons.push(([b0, y - 9.0, b1, y + 9.0], Action::Seek { x0: b0, x1: b1 }));
+    }
+
+    let cy = top + 113.0;
     let cx = (l + r) / 2.0;
-    let y = t + 42.0;
-    let toggle = if m.playing { "\u{E769}" } else { "\u{E768}" };
-    let controls: [(&str, fn() -> Msg); 3] = [("\u{E892}", || Msg::Prev), (toggle, || Msg::Toggle), ("\u{E893}", || Msg::Next)];
-    for (i, (glyph, msg)) in controls.into_iter().enumerate() {
-        let x = cx - 72.0 + i as f32 * 48.0;
-        let btn = [x, y, x + 48.0, y + 30.0];
-        g.text(glyph, &g.f.icon, btn, WHITE);
-        buttons.push((btn, Action::Media(msg)));
-    }
+    let hit = |x: f32, half: f32| [x - half, cy - 14.0, x + half, cy + 14.0];
 
-    let Some(lines) = &m.lyrics else { return };
-    let i = lyrics::active(lines, app.lyric_pos());
-    let text = |i: Option<usize>| i.and_then(|i| lines.get(i)).map_or("", |l| l.1.as_str());
-    let y = (y + 34.0).min(b - 36.0);
-    g.text(text(i), &g.f.center, [l, y, r, y + 20.0], WHITE);
-    g.text(text(Some(i.map_or(0, |i| i + 1))), &g.f.csmall, [l, y + 18.0, r, y + 36.0], GRAY);
+    // tombol lirik: menyalakan atau mematikan lirik di pill
+    let lyrics_on = settings::flag("ShowLyrics", true);
+    g.text("\u{E8BD}", &g.f.icon, hit(l + 30.0, 16.0), if !lyrics_on { DIM } else if m.lyrics.is_some() { ACCENT } else { WHITE });
+    buttons.push((hit(l + 30.0, 16.0), Action::LyricsToggle));
+
+    // mundur dan maju: dua segitiga berdampingan
+    for (center, back, msg) in [(cx - 47.0, true, (|| Msg::Prev) as fn() -> Msg), (cx + 47.0, false, || Msg::Next)] {
+        for k in 0..2 {
+            // tiap segitiga menempati kotak selebar 9; (flat, tip) adalah sisi rata dan ujung lancipnya
+            let x = center - 9.0 + k as f32 * 9.0;
+            let (flat, tip) = if back { (x + 9.0, x) } else { (x, x + 9.0) };
+            g.poly(&[(flat, cy - 7.0), (tip, cy), (flat, cy + 7.0)], WHITE);
+        }
+        buttons.push((hit(center, 20.0), Action::Media(msg)));
+    }
+    if m.playing {
+        g.rrect([cx - 6.0, cy - 8.0, cx - 2.0, cy + 8.0], 1.0, WHITE);
+        g.rrect([cx + 2.0, cy - 8.0, cx + 6.0, cy + 8.0], 1.0, WHITE);
+    } else {
+        g.poly(&[(cx - 5.0, cy - 8.0), (cx + 8.0, cy), (cx - 5.0, cy + 8.0)], WHITE);
+    }
+    buttons.push((hit(cx, 20.0), Action::Media(|| Msg::Toggle)));
+
+    let muted = volume::VOLUME.load(Relaxed) & volume::MUTE != 0;
+    g.text(if muted { "\u{E74F}" } else { "\u{E767}" }, &g.f.icon, hit(r - 8.0, 16.0), WHITE);
+    buttons.push((hit(r - 8.0, 16.0), Action::Mute));
 }

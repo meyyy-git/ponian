@@ -1,6 +1,6 @@
 //! Menggambar dengan Direct2D ke bitmap di memori, lalu mengirimnya ke layered window.
 //! Piksel dengan alpha 0 otomatis tembus klik, jadi area di luar notch tidak menghalangi app lain.
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use windows::{
     Win32::{
         Foundation::*,
@@ -14,7 +14,7 @@ use windows::{
     },
     core::*,
 };
-use windows_numerics::Vector2;
+use windows_numerics::{Matrix3x2, Vector2};
 
 /// kiri, atas, kanan, bawah dalam DIP
 pub type R = [f32; 4];
@@ -22,9 +22,11 @@ pub type R = [f32; 4];
 pub const WHITE: u32 = 0xffffff;
 pub const GRAY: u32 = 0x9a9a9a;
 pub const DIM: u32 = 0x5a5a5a;
-pub const CHIP: u32 = 0x262626;
-pub const ACCENT: u32 = 0x7b61ff;
-pub const GREEN: u32 = 0x34d058;
+pub const CHIP: u32 = 0x1f1f1f;
+pub const CARD: u32 = 0x1a1a1a;
+pub const TRACK: u32 = 0x333333;
+pub const ACCENT: u32 = 0x8b5cf6;
+pub const GREEN: u32 = 0x30d158;
 
 pub struct Fonts {
     pub text: IDWriteTextFormat,
@@ -35,15 +37,28 @@ pub struct Fonts {
     pub csmall: IDWriteTextFormat,
     pub rbold: IDWriteTextFormat,
     pub rsmall: IDWriteTextFormat,
+    /// angka waktu di halaman musik
+    pub num: IDWriteTextFormat,
+    pub rnum: IDWriteTextFormat,
+    /// angka besar (timer, hitungan)
     pub big: IDWriteTextFormat,
+    pub cbig: IDWriteTextFormat,
+    /// jam di baris status
+    pub time: IDWriteTextFormat,
+    pub tiny: IDWriteTextFormat,
     pub icon: IDWriteTextFormat,
     pub icon_small: IDWriteTextFormat,
+    pub icon_big: IDWriteTextFormat,
 }
 
 pub struct Gfx {
     factory: ID2D1Factory,
+    dw: IDWriteFactory,
     rt: ID2D1DCRenderTarget,
     brush: ID2D1SolidColorBrush,
+    dash: Option<ID2D1StrokeStyle>,
+    /// bitmap cover album terakhir, dikenali dari alamat datanya
+    art: RefCell<Option<(usize, ID2D1Bitmap)>>,
     pub f: Fonts,
     /// pengali alpha untuk isi notch, dipakai saat animasi fade
     pub alpha: Cell<f32>,
@@ -52,6 +67,8 @@ pub struct Gfx {
     old: HGDIOBJ,
     size: SIZE,
 }
+
+const NO_STYLE: Option<&ID2D1StrokeStyle> = None;
 
 impl Gfx {
     pub fn new(w: i32, h: i32, dpi: f32) -> Result<Self> {
@@ -82,6 +99,7 @@ impl Gfx {
             rt.SetDpi(dpi, dpi);
             rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let brush = rt.CreateSolidColorBrush(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, None)?;
+            let dash = factory.CreateStrokeStyle(&D2D1_STROKE_STYLE_PROPERTIES { dashStyle: D2D1_DASH_STYLE_DASH, dashCap: D2D1_CAP_STYLE_ROUND, ..Default::default() }, None).ok();
 
             let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let font = |family: PCWSTR, size: f32, weight: DWRITE_FONT_WEIGHT, align: DWRITE_TEXT_ALIGNMENT| -> Result<IDWriteTextFormat> {
@@ -94,23 +112,29 @@ impl Gfx {
                 Ok(f)
             };
             let (ui, mdl) = (w!("Segoe UI"), w!("Segoe MDL2 Assets"));
-            let (normal, semi) = (DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD);
+            let (normal, semi, heavy) = (DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_WEIGHT_BOLD);
             let (left, center, right) = (DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_TRAILING);
             let f = Fonts {
                 text: font(ui, 13.0, normal, left)?,
-                bold: font(ui, 15.0, semi, left)?,
-                small: font(ui, 12.0, normal, left)?,
+                bold: font(ui, 14.5, heavy, left)?,
+                small: font(ui, 11.5, normal, left)?,
                 center: font(ui, 13.0, normal, center)?,
-                cbold: font(ui, 14.0, semi, center)?,
-                csmall: font(ui, 12.0, normal, center)?,
-                rbold: font(ui, 14.0, semi, right)?,
-                rsmall: font(ui, 12.0, normal, right)?,
-                big: font(ui, 30.0, semi, left)?,
+                cbold: font(ui, 13.0, semi, center)?,
+                csmall: font(ui, 11.5, normal, center)?,
+                rbold: font(ui, 13.0, semi, right)?,
+                rsmall: font(ui, 11.5, normal, right)?,
+                num: font(ui, 15.0, normal, left)?,
+                rnum: font(ui, 15.0, normal, right)?,
+                big: font(ui, 27.0, heavy, left)?,
+                cbig: font(ui, 22.0, heavy, center)?,
+                time: font(ui, 13.5, heavy, left)?,
+                tiny: font(ui, 9.5, semi, left)?,
                 // font ikon bawaan Windows 10 dan 11
                 icon: font(mdl, 15.0, normal, center)?,
-                icon_small: font(mdl, 9.0, normal, center)?,
+                icon_small: font(mdl, 9.5, normal, center)?,
+                icon_big: font(mdl, 24.0, normal, center)?,
             };
-            Ok(Self { factory, rt, brush, f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h } })
+            Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(None), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h } })
         }
     }
 
@@ -131,9 +155,13 @@ impl Gfx {
         }
     }
 
-    fn color(&self, rgb: u32) {
+    fn rgba(&self, rgb: u32, a: f32) -> D2D1_COLOR_F {
         let ch = |shift: u32| ((rgb >> shift) & 255) as f32 / 255.0;
-        unsafe { self.brush.SetColor(&D2D1_COLOR_F { r: ch(16), g: ch(8), b: ch(0), a: self.alpha.get() }) }
+        D2D1_COLOR_F { r: ch(16), g: ch(8), b: ch(0), a: a * self.alpha.get() }
+    }
+
+    fn color(&self, rgb: u32) {
+        unsafe { self.brush.SetColor(&self.rgba(rgb, 1.0)) }
     }
 
     pub fn rrect(&self, r: R, radius: f32, rgb: u32) {
@@ -141,11 +169,29 @@ impl Gfx {
         unsafe { self.rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(r), radiusX: radius, radiusY: radius }, &self.brush) }
     }
 
+    /// Bingkai garis putus-putus (area jatuhkan file).
+    pub fn dashed(&self, r: R, radius: f32, rgb: u32) {
+        self.color(rgb);
+        unsafe { self.rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(r), radiusX: radius, radiusY: radius }, &self.brush, 1.2, self.dash.as_ref()) }
+    }
+
     pub fn text(&self, s: &str, format: &IDWriteTextFormat, r: R, rgb: u32) {
         let utf16: Vec<u16> = s.encode_utf16().collect();
         self.color(rgb);
         unsafe {
             self.rt.DrawText(&utf16, format, &rect(r), &self.brush, D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, DWRITE_MEASURING_MODE_NATURAL)
+        }
+    }
+
+    /// Lebar teks dalam DIP, untuk menyusun beberapa teks berdampingan.
+    pub fn width(&self, s: &str, format: &IDWriteTextFormat) -> f32 {
+        let utf16: Vec<u16> = s.encode_utf16().collect();
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            match self.dw.CreateTextLayout(&utf16, format, 2000.0, 100.0) {
+                Ok(layout) if layout.GetMetrics(&mut m).is_ok() => m.widthIncludingTrailingWhitespace,
+                _ => s.chars().count() as f32 * 7.0,
+            }
         }
     }
 
@@ -162,7 +208,7 @@ impl Gfx {
             arcSize: D2D1_ARC_SIZE_SMALL,
         };
         let (cw, ccw) = (D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE);
-        self.fill_path(|s| unsafe {
+        self.path(true, rgb, 0.0, |s| unsafe {
             s.BeginFigure(p(l - ear, 0.0), D2D1_FIGURE_BEGIN_FILLED);
             s.AddArc(&arc(l, ear, ear, cw));
             s.AddLine(p(l, h - rad));
@@ -172,48 +218,97 @@ impl Gfx {
             s.AddLine(p(r, ear));
             s.AddArc(&arc(r + ear, 0.0, ear, cw));
             s.EndFigure(D2D1_FIGURE_END_CLOSED);
-        }, rgb);
+        });
+    }
+
+    /// Pendar warna di tepi bawah notch (mengikuti warna cover album).
+    pub fn glow(&self, l: f32, r: f32, h: f32, radius: f32, rgb: u32) {
+        unsafe {
+            let stops = [D2D1_GRADIENT_STOP { position: 0.0, color: self.rgba(rgb, 0.0) }, D2D1_GRADIENT_STOP { position: 1.0, color: self.rgba(rgb, 0.42) }];
+            let Ok(collection) = self.rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: Vector2 { X: 0.0, Y: h * 0.35 }, endPoint: Vector2 { X: 0.0, Y: h } };
+            let Ok(brush) = self.rt.CreateLinearGradientBrush(&props, None, &collection) else { return };
+            self.rt.PushAxisAlignedClip(&rect([l, h * 0.35, r, h]), D2D1_ANTIALIAS_MODE_ALIASED);
+            self.rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect([l, -radius, r, h]), radiusX: radius, radiusY: radius }, &brush);
+            self.rt.PopAxisAlignedClip();
+        }
+    }
+
+    /// Busur dari sudut `from` sepanjang `sweep` derajat, searah jarum jam dari jam 12.
+    pub fn arc(&self, cx: f32, cy: f32, rad: f32, width: f32, from: f32, sweep: f32, rgb: u32) {
+        if sweep <= 0.0 {
+            return;
+        }
+        if sweep >= 359.9 {
+            self.color(rgb);
+            let circle = D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: rad, radiusY: rad };
+            unsafe { self.rt.DrawEllipse(&circle, &self.brush, width, NO_STYLE) };
+            return;
+        }
+        let at = |deg: f32| Vector2 { X: cx + rad * deg.to_radians().sin(), Y: cy - rad * deg.to_radians().cos() };
+        self.path(false, rgb, width, |s| unsafe {
+            s.BeginFigure(at(from), D2D1_FIGURE_BEGIN_HOLLOW);
+            s.AddArc(&D2D1_ARC_SEGMENT {
+                point: at(from + sweep),
+                size: D2D_SIZE_F { width: rad, height: rad },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: if sweep > 180.0 { D2D1_ARC_SIZE_LARGE } else { D2D1_ARC_SIZE_SMALL },
+            });
+            s.EndFigure(D2D1_FIGURE_END_OPEN);
+        });
     }
 
     /// Cincin progres, dimulai dari jam 12 searah jarum jam.
     pub fn ring(&self, cx: f32, cy: f32, rad: f32, width: f32, frac: f32, rgb: u32, track: u32) {
-        let circle = D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: rad, radiusY: rad };
-        self.color(track);
-        unsafe { self.rt.DrawEllipse(&circle, &self.brush, width, None::<&ID2D1StrokeStyle>) };
-        let frac = frac.clamp(0.0, 1.0);
-        if frac >= 0.999 {
-            self.color(rgb);
-            unsafe { self.rt.DrawEllipse(&circle, &self.brush, width, None::<&ID2D1StrokeStyle>) };
-        } else if frac > 0.0 {
-            let a = frac * std::f32::consts::TAU;
-            let Ok(geom) = (unsafe { self.factory.CreatePathGeometry() }) else { return };
-            let ok = (|| unsafe {
-                let s = geom.Open()?;
-                s.BeginFigure(Vector2 { X: cx, Y: cy - rad }, D2D1_FIGURE_BEGIN_HOLLOW);
-                s.AddArc(&D2D1_ARC_SEGMENT {
-                    point: Vector2 { X: cx + rad * a.sin(), Y: cy - rad * a.cos() },
-                    size: D2D_SIZE_F { width: rad, height: rad },
-                    rotationAngle: 0.0,
-                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                    arcSize: if frac > 0.5 { D2D1_ARC_SIZE_LARGE } else { D2D1_ARC_SIZE_SMALL },
-                });
-                s.EndFigure(D2D1_FIGURE_END_OPEN);
-                s.Close()
-            })();
-            if ok.is_ok() {
-                self.color(rgb);
-                unsafe { self.rt.DrawGeometry(&geom, &self.brush, width, None::<&ID2D1StrokeStyle>) };
-            }
-        }
+        self.arc(cx, cy, rad, width, 0.0, 360.0, track);
+        self.arc(cx, cy, rad, width, 0.0, 360.0 * frac.clamp(0.0, 1.0), rgb);
     }
 
-    fn fill_path(&self, build: impl FnOnce(&ID2D1GeometrySink), rgb: u32) {
+    /// Poligon terisi (segitiga tombol putar dan sejenisnya).
+    pub fn poly(&self, points: &[(f32, f32)], rgb: u32) {
+        let Some(first) = points.first() else { return };
+        self.path(true, rgb, 0.0, |s| unsafe {
+            s.BeginFigure(Vector2 { X: first.0, Y: first.1 }, D2D1_FIGURE_BEGIN_FILLED);
+            for p in &points[1..] {
+                s.AddLine(Vector2 { X: p.0, Y: p.1 });
+            }
+            s.EndFigure(D2D1_FIGURE_END_CLOSED);
+        });
+    }
+
+    fn path(&self, fill: bool, rgb: u32, width: f32, build: impl FnOnce(&ID2D1GeometrySink)) {
         let Ok(geom) = (unsafe { self.factory.CreatePathGeometry() }) else { return };
         let Ok(sink) = (unsafe { geom.Open() }) else { return };
         build(&sink);
         if unsafe { sink.Close() }.is_ok() {
             self.color(rgb);
-            unsafe { self.rt.FillGeometry(&geom, &self.brush, None::<&ID2D1Brush>) };
+            unsafe {
+                if fill {
+                    self.rt.FillGeometry(&geom, &self.brush, None::<&ID2D1Brush>);
+                } else {
+                    self.rt.DrawGeometry(&geom, &self.brush, width, NO_STYLE);
+                }
+            }
+        }
+    }
+
+    /// Gambar persegi `side` x `side` piksel BGRA ke `r` dengan sudut membulat.
+    pub fn image(&self, bgra: &[u8], side: u32, r: R, radius: f32) {
+        let key = bgra.as_ptr() as usize;
+        let mut cache = self.art.borrow_mut();
+        if cache.as_ref().is_none_or(|c| c.0 != key) {
+            let props = D2D1_BITMAP_PROPERTIES { pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED }, dpiX: 96.0, dpiY: 96.0 };
+            let made = unsafe { self.rt.CreateBitmap(D2D_SIZE_U { width: side, height: side }, Some(bgra.as_ptr() as _), side * 4, &props) };
+            *cache = made.ok().map(|b| (key, b));
+        }
+        let Some((_, bitmap)) = cache.as_ref() else { return };
+        unsafe {
+            let Ok(brush) = self.rt.CreateBitmapBrush(bitmap, None, None) else { return };
+            let s = (r[2] - r[0]) / side as f32;
+            brush.SetTransform(&Matrix3x2 { M11: s, M12: 0.0, M21: 0.0, M22: s, M31: r[0], M32: r[1] });
+            brush.SetOpacity(self.alpha.get());
+            self.rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(r), radiusX: radius, radiusY: radius }, &brush);
         }
     }
 

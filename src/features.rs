@@ -11,9 +11,9 @@ use crate::{
 };
 use std::time::Instant;
 use windows::Win32::{
-    Foundation::RECT,
+    Foundation::{LPARAM, RECT, WPARAM},
     System::Diagnostics::Debug::MessageBeep,
-    UI::WindowsAndMessaging::{GetWindowRect, MB_ICONASTERISK},
+    UI::WindowsAndMessaging::{GetWindowRect, MB_ICONASTERISK, PostMessageW},
 };
 
 pub const INPUT_TODO: usize = 1;
@@ -259,7 +259,22 @@ impl App {
         let now = clock::now();
         match action {
             Action::Media(msg) => drop(self.tx.send(msg())),
-            Action::Page(i) => self.page = i,
+            Action::Page(i) => self.go(i),
+            // ditangani di App::click karena butuh posisi klik
+            Action::Seek { .. } => {}
+            Action::Mute => drop(self.tx.send(Msg::Mute)),
+            Action::LyricsToggle => {
+                settings::set_dword("ShowLyrics", !settings::flag("ShowLyrics", true) as u32);
+                let _ = self.tx.send(Msg::Refresh);
+            }
+            Action::WaterToggle => {
+                self.water_cfg.on = !self.water_cfg.on;
+                settings::set_dword("Water.On", self.water_cfg.on as u32);
+            }
+            Action::OpenSettings => {
+                let _ = unsafe { PostMessageW(Some(self.hwnd), crate::WM_APP_OPEN_SETTINGS, WPARAM(0), LPARAM(0)) };
+            }
+            Action::ShelfTab(tab) => self.shelf_tab = tab,
             Action::PrevPage => self.turn(-1),
             Action::NextPage => self.turn(1),
             Action::PomoToggle => self.pomo.toggle(Instant::now(), self.durations),

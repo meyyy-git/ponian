@@ -102,3 +102,18 @@ mod tests {
         assert_eq!(span(120), "2 j");
     }
 }
+
+/// Jam sekarang menurut format Windows milik user: ("3:18", "PM") atau ("15:18", "").
+pub fn time_text() -> (String, String) {
+    use windows::{
+        Win32::Globalization::{GetTimeFormatEx, TIME_NOSECONDS},
+        core::PCWSTR,
+    };
+    let mut buf = [0u16; 32];
+    let n = unsafe { GetTimeFormatEx(PCWSTR::null(), TIME_NOSECONDS, None, PCWSTR::null(), Some(&mut buf)) } as usize;
+    let s = String::from_utf16_lossy(&buf[..n.saturating_sub(1)]);
+    match s.split_once(' ') {
+        Some((time, ampm)) => (time.to_string(), ampm.to_string()),
+        None => (s, String::new()),
+    }
+}

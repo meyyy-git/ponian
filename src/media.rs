@@ -16,9 +16,10 @@ use std::{
 };
 use windows::{
     Foundation::TypedEventHandler,
+    Graphics::Imaging::{BitmapAlphaMode, BitmapBounds, BitmapDecoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform, ColorManagementMode, ExifOrientationMode},
     Media::Control::{
         GlobalSystemMediaTransportControlsSession as Session, GlobalSystemMediaTransportControlsSessionManager as Manager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
+        GlobalSystemMediaTransportControlsSessionMediaProperties as Props, GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
     },
     Win32::{
         Foundation::{HWND, LPARAM, WPARAM},
@@ -30,13 +31,28 @@ use windows::{
 
 pub enum Msg {
     Refresh,
+    /// properti media berubah: cover album perlu dibaca ulang
+    Props,
     Prev,
     Toggle,
     Next,
     Pause,
+    /// lompat ke posisi 0..1 dari durasi
+    Seek(f32),
+    Mute,
     Net,
     Lyrics(String, Option<Arc<Vec<Line>>>),
     AudioDevice,
+}
+
+/// Sisi cover album dalam piksel setelah diperkecil.
+pub const ART: u32 = 96;
+
+/// Cover album: ART x ART piksel BGRA premultiplied.
+pub struct Art {
+    pub bgra: Vec<u8>,
+    /// warna rata-rata cover, dipakai untuk pendar di pill lirik
+    pub tint: u32,
 }
 
 #[derive(Clone, Default)]
@@ -47,7 +63,9 @@ pub struct Media {
     pub playing: bool,
     pos_ms: i64,
     at: Option<Instant>,
+    pub dur_ms: i64,
     pub lyrics: Option<Arc<Vec<Line>>>,
+    pub art: Option<Arc<Art>>,
 }
 
 impl Media {
@@ -55,7 +73,8 @@ impl Media {
     // shortcut: mengasumsikan kecepatan putar 1x; lirik akan meleset kalau pemutar dipercepat.
     pub fn pos(&self) -> i64 {
         let since = if self.playing { self.at.map_or(0, |t| t.elapsed().as_millis() as i64) } else { 0 };
-        self.pos_ms + since
+        let pos = self.pos_ms + since;
+        if self.dur_ms > 0 { pos.min(self.dur_ms) } else { pos }
     }
 }
 
@@ -73,20 +92,46 @@ pub fn spawn(hwnd: isize) -> Sender<Msg> {
 }
 
 macro_rules! ping {
-    ($tx:expr) => {{
+    ($tx:expr, $msg:expr) => {{
         let tx = $tx.clone();
         TypedEventHandler::new(move |_, _| {
-            let _ = tx.send(Msg::Refresh);
+            let _ = tx.send($msg);
             Ok(())
         })
     }};
+}
+
+/// Perkecil cover ke ART x ART (dipotong tengah supaya thumbnail 16:9 tidak gepeng).
+fn thumbnail(props: &Props) -> Result<Art> {
+    let stream = props.Thumbnail()?.OpenReadAsync()?.join()?;
+    let dec = BitmapDecoder::CreateAsync(&stream)?.join()?;
+    let (w, h) = (dec.PixelWidth()?.max(1) as f32, dec.PixelHeight()?.max(1) as f32);
+    let scale = ART as f32 / w.min(h);
+    let (sw, sh) = (((w * scale).ceil() as u32).max(ART), ((h * scale).ceil() as u32).max(ART));
+    let t = BitmapTransform::new()?;
+    t.SetScaledWidth(sw)?;
+    t.SetScaledHeight(sh)?;
+    t.SetInterpolationMode(BitmapInterpolationMode::Fant)?;
+    t.SetBounds(BitmapBounds { X: (sw - ART) / 2, Y: (sh - ART) / 2, Width: ART, Height: ART })?;
+    let data = dec
+        .GetPixelDataTransformedAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Premultiplied, &t, ExifOrientationMode::IgnoreExifOrientation, ColorManagementMode::DoNotColorManage)?
+        .join()?
+        .DetachPixelData()?;
+    let bgra = data.to_vec();
+    let n = (bgra.len() / 4).max(1) as u64;
+    let sum = bgra.chunks_exact(4).fold([0u64; 3], |s, p| [s[0] + p[0] as u64, s[1] + p[1] as u64, s[2] + p[2] as u64]);
+    let (b, g, r) = (sum[0] / n, sum[1] / n, sum[2] / n);
+    // terangkan sampai kanal terbesar 220 supaya pendar tetap terlihat untuk cover gelap
+    let k = 220.0 / r.max(g).max(b).max(1) as f32;
+    let ch = |v: u64| ((v as f32 * k).min(255.0)) as u32;
+    Ok(Art { bgra, tint: ch(r) << 16 | ch(g) << 8 | ch(b) })
 }
 
 fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
     let mut volume = volume::Watch::new(hwnd, &tx).ok();
     let manager = Manager::RequestAsync()?.join()?;
-    manager.CurrentSessionChanged(&ping!(tx))?;
+    manager.CurrentSessionChanged(&ping!(tx, Msg::Props))?;
     let net_tx = tx.clone();
     let _ = windows::Networking::Connectivity::NetworkInformation::NetworkStatusChanged(&windows::Networking::Connectivity::NetworkStatusChangedEventHandler::new(move |_| {
         let _ = net_tx.send(Msg::Net);
@@ -95,15 +140,33 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
     let _ = tx.send(Msg::Net);
     let mut session: Option<Session> = None;
     let mut cache = Cache::new();
-    let _ = tx.send(Msg::Refresh);
+    // (judul + artis, cover): cover hanya dibaca ulang saat properti media berubah
+    let mut art: (String, Option<Arc<Art>>) = Default::default();
+    let _ = tx.send(Msg::Props);
 
     for msg in rx {
+        let mut reload_art = false;
         match msg {
             Msg::Refresh => {}
+            Msg::Props => reload_art = true,
             Msg::Prev => drop(session.as_ref().map(|s| s.TrySkipPreviousAsync())),
             Msg::Toggle => drop(session.as_ref().map(|s| s.TryTogglePlayPauseAsync())),
             Msg::Next => drop(session.as_ref().map(|s| s.TrySkipNextAsync())),
             Msg::Pause => drop(session.as_ref().map(|s| s.TryPauseAsync())),
+            Msg::Seek(frac) => {
+                let _ = session.as_ref().map(|s| -> Result<()> {
+                    let tl = s.GetTimelineProperties()?;
+                    let (a, b) = (tl.StartTime()?.Duration, tl.EndTime()?.Duration);
+                    s.TryChangePlaybackPositionAsync(a + ((b - a) as f64 * frac.clamp(0.0, 1.0) as f64) as i64)?;
+                    Ok(())
+                });
+            }
+            Msg::Mute => {
+                if let Some(v) = &volume {
+                    v.toggle_mute();
+                }
+                continue;
+            }
             Msg::Lyrics(key, lines) => drop(cache.insert(key, lines)),
             Msg::AudioDevice => {
                 if let Some(v) = &mut volume {
@@ -124,21 +187,25 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
         if id(&current) != id(&session) {
             session = current;
             if let Some(s) = &session {
-                let _ = s.MediaPropertiesChanged(&ping!(tx));
-                let _ = s.PlaybackInfoChanged(&ping!(tx));
-                let _ = s.TimelinePropertiesChanged(&ping!(tx));
+                let _ = s.MediaPropertiesChanged(&ping!(tx, Msg::Props));
+                let _ = s.PlaybackInfoChanged(&ping!(tx, Msg::Refresh));
+                let _ = s.TimelinePropertiesChanged(&ping!(tx, Msg::Refresh));
             }
         }
-        let media = session.as_ref().and_then(|s| read(s, &mut cache, &tx).ok()).unwrap_or_default();
+        let media = session.as_ref().and_then(|s| read(s, &mut cache, &mut art, reload_art, &tx).ok()).unwrap_or_default();
         *MEDIA.lock().unwrap() = Some(media);
         let _ = unsafe { PostMessageW(Some(HWND(hwnd as _)), WM_APP_MEDIA, WPARAM(0), LPARAM(0)) };
     }
     Ok(())
 }
 
-fn read(s: &Session, cache: &mut Cache, tx: &Sender<Msg>) -> Result<Media> {
+fn read(s: &Session, cache: &mut Cache, art: &mut (String, Option<Arc<Art>>), reload_art: bool, tx: &Sender<Msg>) -> Result<Media> {
     let props = s.TryGetMediaPropertiesAsync()?.join()?;
     let (title, artist) = (props.Title()?.to_string(), props.Artist()?.to_string());
+    let track = format!("{title}\n{artist}");
+    if reload_art || art.0 != track {
+        *art = (track, thumbnail(&props).ok().map(Arc::new));
+    }
     let playing = s.GetPlaybackInfo()?.PlaybackStatus()? == Status::Playing;
     let tl = s.GetTimelineProperties()?;
     let dur_ms = (tl.EndTime()?.Duration - tl.StartTime()?.Duration) / 10_000;
@@ -174,5 +241,5 @@ fn read(s: &Session, cache: &mut Cache, tx: &Sender<Msg>) -> Result<Media> {
     } else {
         None
     };
-    Ok(Media { session: true, title, artist, playing, pos_ms, at: Some(Instant::now()), lyrics })
+    Ok(Media { session: true, title, artist, playing, pos_ms, at: Some(Instant::now()), dur_ms, lyrics, art: art.1.clone() })
 }

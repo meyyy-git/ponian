@@ -35,7 +35,7 @@ use features::WaterCfg;
 use media::{Media, Msg};
 use pages::Page;
 use pomodoro::{Durations, Pomo, Run};
-use render::{ACCENT, CHIP, DIM, GRAY, GREEN, Gfx, R, WHITE};
+use render::{ACCENT, CHIP, DIM, GRAY, GREEN, Gfx, R, TRACK, WHITE};
 use settings::{Item, Section, opts};
 use state::{Inputs, View};
 use std::{
@@ -69,19 +69,20 @@ pub const WM_APP_ONLINE: u32 = WM_APP + 12;
 pub const WM_APP_OCR: u32 = WM_APP + 14;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const PBT_POWERSETTINGCHANGE: u32 = 0x8013;
-const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 5;
+pub const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 5;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_MOUSEHWHEEL: u32 = 0x020E;
 
 /// Ukuran window dalam DIP. Notch digambar di dalamnya, sisanya transparan dan tembus klik.
 const WIN: (f32, f32) = (440.0, 190.0);
 const IDLE: (f32, f32) = (152.0, 30.0);
-const EXPANDED: (f32, f32) = (405.0, 172.0);
+const EXPANDED: (f32, f32) = (396.0, 171.0);
 /// Notch sedikit membesar begitu kursor masuk, sebelum jeda hover selesai.
 const PEEK: (f32, f32) = (8.0, 3.0);
-const EAR: f32 = 6.0;
+/// Pill lirik saat musik berjalan.
+const LYRIC: (f32, f32) = (300.0, 34.0);
 const HUD_MS: u32 = 3000;
-const HOVER_MS: u32 = 150;
+const HOVER_MS: u32 = 240;
 const FADE_SECS: f32 = 0.22;
 
 const T_ANIM: usize = 1;
@@ -114,6 +115,13 @@ pub struct Alert {
 #[derive(Clone, Copy)]
 pub enum Action {
     Media(fn() -> Msg),
+    /// klik pada batang progres; x0..x1 adalah rentang batangnya
+    Seek { x0: f32, x1: f32 },
+    Mute,
+    LyricsToggle,
+    WaterToggle,
+    OpenSettings,
+    ShelfTab(u8),
     Page(usize),
     PrevPage,
     NextPage,
@@ -159,6 +167,8 @@ pub struct App {
     dragging: bool,
     /// posisi tombol mouse ditekan di atas file Shelf, untuk mulai menyeret keluar
     press: Option<(f32, f32, usize)>,
+    /// tab halaman Shelf: 0 = File, 1 = Clipboard
+    shelf_tab: u8,
     brightness_ready: bool,
     layout: (isize, isize),
     battery_band: u8,
@@ -226,17 +236,14 @@ impl App {
     }
 
     fn target(&self, view: View) -> (f32, f32) {
-        let m = &self.media;
         let peek = if self.inside { PEEK } else { (0.0, 0.0) };
         match view {
             View::Hidden => (IDLE.0, 0.0),
             View::Idle => (IDLE.0 + peek.0, IDLE.1 + peek.1),
-            View::Compact => {
-                let w = if m.lyrics.is_some() { 360.0 } else { 280.0 } + if self.pomo_remaining().is_some() { 54.0 } else { 0.0 };
-                (w + peek.0, IDLE.1 + peek.1)
-            }
+            View::Compact => (LYRIC.0 + peek.0, LYRIC.1 + peek.1),
             View::Hud if matches!(self.hud, Some(Hud::Alert | Hud::Info)) => (380.0, 38.0),
             View::Hud if matches!(self.hud, Some(Hud::Caps(_) | Hud::Lang(_))) => (220.0, 34.0),
+            View::Hud if matches!(self.hud, Some(Hud::Volume | Hud::Brightness(_))) => (320.0, 35.0),
             View::Hud => (300.0, 34.0),
             View::Expanded => EXPANDED,
         }
@@ -251,7 +258,8 @@ impl App {
             hover: self.hover || input::is_open() || self.dragging,
             ringing: self.ringing(),
             hud: self.hud.is_some(),
-            playing,
+            // pill melebar hanya kalau ada lirik untuk ditampilkan; tanpa lirik cukup ikon audio yang bergerak
+            playing: playing && self.media.lyrics.is_some(),
         });
         let to = self.target(view);
         unsafe {
@@ -261,7 +269,8 @@ impl App {
                 self.anim_start = Some(Instant::now());
                 SetTimer(Some(self.hwnd), T_ANIM, 16, None);
             }
-            let need_tick = self.pomo.running() || self.ringing() || (playing && self.media.lyrics.is_some());
+            // selama musik berjalan: ikon audio, baris lirik, dan batang progres ikut bergerak
+            let need_tick = self.pomo.running() || self.ringing() || playing;
             if need_tick != self.ticking {
                 self.ticking = need_tick;
                 if need_tick {
@@ -310,17 +319,31 @@ impl App {
         g.begin();
         if h > 0.1 {
             let blink = self.ringing() && (self.born.elapsed().as_millis() / 500) % 2 == 1;
-            // radius sudut bawah ikut membesar bersama tinggi notch
-            let radius = 11.0 + ((h - IDLE.1) / (EXPANDED.1 - IDLE.1)).clamp(0.0, 1.0) * 13.0;
+            // radius sudut bawah dan "telinga" ikut membesar bersama tinggi notch
+            let grow = ((h - IDLE.1) / (EXPANDED.1 - IDLE.1)).clamp(0.0, 1.0);
+            let (radius, ear) = (11.0 + grow * 13.0, 8.0 + grow * 10.0);
             g.alpha.set(1.0);
-            g.notch(cx - w / 2.0, cx + w / 2.0, h, radius, EAR, if blink { 0x8a3a00 } else { 0x000000 });
+            g.notch(cx - w / 2.0, cx + w / 2.0, h, radius, ear, if blink { 0x8a3a00 } else { 0x000000 });
             g.clip([cx - w / 2.0, 0.0, cx + w / 2.0, h]);
             g.alpha.set(k);
+            let musical = self.view == View::Compact || (self.view == View::Hud && self.hud == Some(Hud::Track));
+            if let (true, Some(art)) = (musical, &self.media.art) {
+                g.glow(cx - w / 2.0, cx + w / 2.0, h, radius, art.tint);
+            }
             self.content(cx, &mut buttons);
             g.unclip();
         }
         g.end(self.hwnd);
         self.buttons = buttons;
+    }
+
+    /// Jam dengan AM/PM kecil (kalau format Windows memakainya), ditengahkan di `cx`.
+    fn clock(&self, g: &Gfx, cx: f32, cy: f32) {
+        let (time, ampm) = clock::time_text();
+        let (tw, aw) = (g.width(&time, &g.f.time), g.width(&ampm, &g.f.tiny));
+        let x = cx - (tw + if ampm.is_empty() { 0.0 } else { 3.0 + aw }) / 2.0;
+        g.text(&time, &g.f.time, [x, cy - 11.0, x + tw + 2.0, cy + 11.0], WHITE);
+        g.text(&ampm, &g.f.tiny, [x + tw + 3.0, cy - 8.5, x + tw + 5.0 + aw, cy + 11.5], WHITE);
     }
 
     /// Isi notch diletakkan menurut ukuran tujuan supaya tidak ikut bergeser selama animasi.
@@ -329,41 +352,41 @@ impl App {
         let (x0, x1, h) = (cx - self.to.0 / 2.0, cx + self.to.0 / 2.0, self.to.1);
         let remaining = self.pomo_remaining();
         let battery = power::status();
-        let clock = unsafe { GetLocalTime() };
+        let playing = m.session && m.playing;
+        let tint = m.art.as_ref().map_or(GRAY, |a| a.tint);
+        // batang level untuk HUD volume dan kecerahan
+        let level = |glyph: &str, frac: f32| {
+            g.text(glyph, &g.f.icon, [x0 + 14.0, 0.0, x0 + 44.0, h], WHITE);
+            let (b0, b1) = (x0 + 50.0, x1 - 22.0);
+            g.rrect([b0, h / 2.0 - 2.5, b1, h / 2.0 + 2.5], 2.5, TRACK);
+            if frac > 0.0 {
+                g.rrect([b0, h / 2.0 - 2.5, b0 + (b1 - b0) * frac.min(1.0), h / 2.0 + 2.5], 2.5, WHITE);
+            }
+        };
 
         match self.view {
-            View::Idle | View::Compact => {
+            // pill diam: cincin baterai, jam (atau sisa Pomodoro), ikon audio
+            View::Idle => {
                 if let Some((plugged, pct)) = battery {
-                    battery_ring(g, x0 + 19.0, h / 2.0, 7.5, plugged, pct);
+                    battery_ring(g, x0 + 18.0, h / 2.0, 7.0, plugged, pct);
                 }
-                let right = if self.view == View::Compact && remaining.is_some() { 64.0 } else { 40.0 };
-                let center = [x0 + 34.0, 0.0, x1 - right, h];
-                if self.view == View::Compact {
-                    let line = m.lyrics.as_ref().and_then(|l| Some(l[lyrics::active(l, self.lyric_pos())?].1.as_str())).filter(|s| !s.is_empty());
-                    let track = if m.artist.is_empty() { m.title.clone() } else { format!("{} \u{2014} {}", m.title, m.artist) };
-                    g.text(line.unwrap_or(&track), &g.f.center, center, WHITE);
-                } else {
-                    let text = remaining.clone().unwrap_or_else(|| format!("{:02}:{:02}", clock.wHour, clock.wMinute));
-                    g.text(&text, &g.f.cbold, center, WHITE);
+                match &remaining {
+                    Some(rem) => g.text(rem, &g.f.cbold, [x0 + 30.0, 0.0, x1 - 36.0, h], WHITE),
+                    None => self.clock(g, cx + 1.0, h / 2.0),
                 }
-                match (&remaining, self.view) {
-                    (Some(rem), View::Compact) => g.text(rem, &g.f.csmall, [x1 - 62.0, 0.0, x1 - 12.0, h], GRAY),
-                    (Some(_), _) => g.text("\u{E916}", &g.f.icon_small, [x1 - 30.0, 0.0, x1 - 14.0, h], GRAY),
-                    (None, _) if m.session && m.playing => wave(g, x1 - 22.0, h / 2.0),
-                    _ => {}
-                }
+                wave(g, x1 - 24.0, h / 2.0, playing.then(|| self.born.elapsed().as_secs_f32()));
+            }
+            // pill lirik: baris yang sedang dinyanyikan, dengan pendar warna cover
+            View::Compact => {
+                let line = m.lyrics.as_ref().and_then(|l| Some(l[lyrics::active(l, self.lyric_pos())?].1.as_str())).filter(|s| !s.is_empty());
+                g.text(NOTE, &g.f.icon, [x0 + 12.0, 0.0, x0 + 38.0, h], tint);
+                g.text(line.unwrap_or(&m.title), &g.f.cbold, [x0 + 40.0, 0.0, x1 - 22.0, h], WHITE);
             }
             View::Hud => match self.hud {
                 Some(Hud::Volume) => {
                     let v = volume::VOLUME.load(Relaxed);
-                    let (muted, pct) = (v & volume::MUTE != 0, (v & !volume::MUTE).min(100));
-                    g.text(if muted { "\u{E74F}" } else { "\u{E767}" }, &g.f.icon, [x0 + 14.0, 0.0, x0 + 44.0, h], WHITE);
-                    let (b0, b1) = (x0 + 50.0, x1 - 60.0);
-                    g.rrect([b0, h / 2.0 - 2.0, b1, h / 2.0 + 2.0], 2.0, 0x3a3a3a);
-                    if pct > 0 && !muted {
-                        g.rrect([b0, h / 2.0 - 2.0, b0 + (b1 - b0) * pct as f32 / 100.0, h / 2.0 + 2.0], 2.0, WHITE);
-                    }
-                    g.text(&format!("{pct}%"), &g.f.csmall, [x1 - 56.0, 0.0, x1 - 14.0, h], WHITE);
+                    let muted = v & volume::MUTE != 0;
+                    level(if muted { "\u{E74F}" } else { "\u{E767}" }, if muted { 0.0 } else { (v & !volume::MUTE) as f32 / 100.0 });
                 }
                 Some(Hud::Power(plugged, pct)) => {
                     battery_ring(g, x0 + 22.0, h / 2.0, 8.0, plugged, pct);
@@ -372,16 +395,10 @@ impl App {
                 }
                 Some(Hud::Track) => {
                     let track = if m.artist.is_empty() { m.title.clone() } else { format!("{} \u{2014} {}", m.title, m.artist) };
-                    g.text(&track, &g.f.center, [x0 + 34.0, 0.0, x1 - 34.0, h], WHITE);
-                    wave(g, x1 - 22.0, h / 2.0);
+                    g.text(NOTE, &g.f.icon, [x0 + 12.0, 0.0, x0 + 38.0, h], tint);
+                    g.text(&track, &g.f.cbold, [x0 + 40.0, 0.0, x1 - 22.0, h], WHITE);
                 }
-                Some(Hud::Brightness(pct)) => {
-                    g.text("\u{E706}", &g.f.icon, [x0 + 14.0, 0.0, x0 + 44.0, h], WHITE);
-                    let (b0, b1) = (x0 + 50.0, x1 - 60.0);
-                    g.rrect([b0, h / 2.0 - 2.0, b1, h / 2.0 + 2.0], 2.0, 0x3a3a3a);
-                    g.rrect([b0, h / 2.0 - 2.0, b0 + (b1 - b0) * pct.min(100) as f32 / 100.0, h / 2.0 + 2.0], 2.0, WHITE);
-                    g.text(&format!("{pct}%"), &g.f.csmall, [x1 - 56.0, 0.0, x1 - 14.0, h], WHITE);
-                }
+                Some(Hud::Brightness(pct)) => level("\u{E706}", pct as f32 / 100.0),
                 Some(Hud::Caps(on)) => {
                     g.text("\u{E84A}", &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], if on { ACCENT } else { GRAY });
                     g.text(if on { "Caps Lock nyala" } else { "Caps Lock mati" }, &g.f.text, [x0 + 44.0, 0.0, x1 - 12.0, h], WHITE);
@@ -408,30 +425,42 @@ impl App {
                 None => {}
             },
             View::Expanded => {
+                // baris status di tengah-atas: cincin baterai, tanggal, jam; ikon audio di kanan
                 let page = self.current_page();
-                g.text(page.title(), &g.f.bold, [x0 + 24.0, 8.0, x0 + 190.0, 34.0], WHITE);
-                g.text(&format!("{:02}:{:02}", clock.wHour, clock.wMinute), &g.f.rbold, [x1 - 74.0, 8.0, x1 - 22.0, 34.0], WHITE);
-                let date = state::date_id(clock.wDayOfWeek, clock.wDay, clock.wMonth, clock.wYear);
-                g.text(&date, &g.f.rsmall, [x1 - 190.0, 8.0, x1 - 80.0, 34.0], GRAY);
+                let c = unsafe { GetLocalTime() };
+                let date = state::date_id(c.wDayOfWeek, c.wDay, c.wMonth, c.wYear);
+                let (time, ampm) = clock::time_text();
+                let ring = if battery.is_some() { 24.0 } else { 0.0 };
+                let (dw, tw, aw) = (g.width(&date, &g.f.text), g.width(&time, &g.f.time), g.width(&ampm, &g.f.tiny));
+                let mut x = cx - (ring + dw + 9.0 + tw + 3.0 + aw) / 2.0;
                 if let Some((plugged, pct)) = battery {
-                    battery_ring(g, x1 - 200.0, 21.0, 7.0, plugged, pct);
+                    battery_ring(g, x + 8.0, 27.0, 7.0, plugged, pct);
+                    x += ring;
+                }
+                g.text(&date, &g.f.text, [x, 16.0, x + dw + 2.0, 38.0], 0xe8e8e8);
+                x += dw + 9.0;
+                g.text(&time, &g.f.time, [x, 16.0, x + tw + 2.0, 38.0], WHITE);
+                g.text(&ampm, &g.f.tiny, [x + tw + 3.0, 18.5, x + tw + 3.0 + aw + 2.0, 38.5], WHITE);
+                wave(g, x1 - 40.0, 27.0, playing.then(|| self.born.elapsed().as_secs_f32()));
+                if page != Page::Music {
+                    g.text(page.title(), &g.f.bold, [x0 + 32.0, 21.0, x0 + 124.0, 43.0], WHITE);
                 }
 
-                page.draw(self, g, [x0 + 32.0, 42.0, x1 - 32.0, h - 24.0], buttons);
+                page.draw(self, g, [x0 + 32.0, 50.0, x1 - 32.0, 152.0], buttons);
 
                 let n = self.pages.len();
                 if n > 1 {
-                    for (glyph, x, action) in [("\u{E76B}", x0 + 6.0, Action::PrevPage), ("\u{E76C}", x1 - 28.0, Action::NextPage)] {
-                        let btn = [x, h / 2.0 - 8.0, x + 22.0, h / 2.0 + 26.0];
+                    for (glyph, x, action) in [("\u{E76B}", x0 + 2.0, Action::PrevPage), ("\u{E76C}", x1 - 24.0, Action::NextPage)] {
+                        let btn = [x, 78.0, x + 22.0, 108.0];
                         g.text(glyph, &g.f.icon_small, btn, DIM);
                         buttons.push((btn, action));
                     }
-                    let widths: Vec<f32> = (0..n).map(|i| if i == self.page { 16.0 } else { 5.0 }).collect();
+                    let widths: Vec<f32> = (0..n).map(|i| if i == self.page { 14.0 } else { 3.0 }).collect();
                     let total = widths.iter().sum::<f32>() + 5.0 * (n - 1) as f32;
                     let mut x = cx - total / 2.0;
                     for (i, w) in widths.into_iter().enumerate() {
-                        g.rrect([x, h - 14.0, x + w, h - 9.0], 2.5, if i == self.page { WHITE } else { DIM });
-                        buttons.push(([x - 3.0, h - 20.0, x + w + 3.0, h - 2.0], Action::Page(i)));
+                        g.rrect([x, 163.5, x + w, 166.5], 1.5, if i == self.page { WHITE } else { DIM });
+                        buttons.push(([x - 2.5, 157.0, x + w + 2.5, h], Action::Page(i)));
                         x += w + 5.0;
                     }
                 }
@@ -448,10 +477,21 @@ impl App {
         } else if self.view == View::Hud && matches!(self.hud, Some(Hud::Alert | Hud::Info)) && !matches!(hit, Some(Action::Snooze)) {
             // klik pada peringatan berarti sudah dibaca
             (self.alert, self.hud) = (None, None);
+        } else if let Some(Action::Seek { x0, x1 }) = hit {
+            let _ = self.tx.send(Msg::Seek((x - x0) / (x1 - x0)));
         } else if let Some(action) = hit {
             self.act(action);
         }
         self.update();
+    }
+
+    /// Pindah halaman dengan isi yang muncul perlahan.
+    fn go(&mut self, page: usize) {
+        if page != self.page && self.view == View::Expanded {
+            (self.fade, self.from, self.anim_start) = (true, self.cur, Some(Instant::now()));
+            unsafe { SetTimer(Some(self.hwnd), T_ANIM, 16, None) };
+        }
+        self.page = page;
     }
 
     /// Daftarkan shortcut dan beri tahu kalau ada yang bentrok dengan app lain.
@@ -463,7 +503,7 @@ impl App {
     }
 
     fn turn(&mut self, by: isize) {
-        self.page = (self.page as isize + by).rem_euclid(self.pages.len() as isize) as usize;
+        self.go((self.page as isize + by).rem_euclid(self.pages.len() as isize) as usize);
     }
 
     /// Letakkan window di tengah-atas monitor pilihan dan buat ulang permukaan gambar untuk DPI dan ukuran sekarang.
@@ -653,17 +693,24 @@ impl App {
 /// Cincin baterai: hijau saat dicas, merah saat hampir habis, dengan ikon petir saat dicas.
 fn battery_ring(g: &Gfx, cx: f32, cy: f32, rad: f32, plugged: bool, pct: u8) {
     let color = if plugged { GREEN } else if pct <= 20 { 0xff453a } else { WHITE };
-    g.ring(cx, cy, rad, 2.2, pct as f32 / 100.0, color, 0x333333);
+    g.ring(cx, cy, rad, 2.2, pct as f32 / 100.0, color, TRACK);
     if plugged {
         g.text("\u{E945}", &g.f.icon_small, [cx - rad, cy - rad, cx + rad, cy + rad], color);
     }
 }
 
-/// Ikon gelombang audio diam (tidak beranimasi, supaya CPU tetap nol saat musik diputar).
-fn wave(g: &Gfx, cx: f32, cy: f32) {
+/// Ikon not musik di font ikon Windows.
+pub const NOTE: &str = "\u{E8D6}";
+
+/// Ikon gelombang audio. `t` (detik) menggerakkan batangnya selama musik berjalan; None = diam dan redup.
+fn wave(g: &Gfx, cx: f32, cy: f32, t: Option<f32>) {
     for (i, bar) in [5.0f32, 9.0, 13.0, 9.0, 6.0].into_iter().enumerate() {
-        let x = cx - 11.0 + i as f32 * 4.4;
-        g.rrect([x, cy - bar / 2.0, x + 2.2, cy + bar / 2.0], 1.1, WHITE);
+        let x = cx - 9.0 + i as f32 * 3.8;
+        let bar = match t {
+            Some(t) => 3.0 + (bar - 3.0) * (0.55 + 0.45 * (t * 7.0 + i as f32 * 1.9).sin()),
+            None => 2.0 + bar * 0.35,
+        };
+        g.rrect([x, cy - bar / 2.0, x + 2.0, cy + bar / 2.0], 1.0, if t.is_some() { WHITE } else { GRAY });
     }
 }
 
@@ -954,6 +1001,7 @@ fn main() -> Result<()> {
             clips: Vec::new(),
             dragging: false,
             press: None,
+            shelf_tab: 0,
             brightness_ready: false,
             layout: (0, 0),
             battery_band: 0,

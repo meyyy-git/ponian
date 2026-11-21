@@ -92,6 +92,16 @@ impl Watch {
         }
     }
 
+    pub fn toggle_mute(&self) {
+        if let Some((vol, _)) = &self.endpoint {
+            unsafe {
+                if let Ok(muted) = vol.GetMute() {
+                    let _ = vol.SetMute(!muted.as_bool(), std::ptr::null());
+                }
+            }
+        }
+    }
+
     /// Pindah ke perangkat output default yang sekarang (misalnya setelah headphone dicolok).
     pub fn rebind(&mut self, hwnd: isize) {
         self.unbind();

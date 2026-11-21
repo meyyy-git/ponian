@@ -1,56 +1,71 @@
 use crate::{
     Action, App,
-    render::{DIM, GRAY, Gfx, R, WHITE},
+    render::{ACCENT, CARD, DIM, GRAY, Gfx, R, WHITE},
     shelf,
 };
 
 const ROWS: usize = 3;
 
 pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>) {
-    let mid = (l + r) / 2.0;
-    let (fl, fr, cl, cr) = (l, mid - 8.0, mid + 8.0, r);
+    // tab File dan Clipboard
+    let mut x = l;
+    for (tab, name, count) in [(0u8, "File", app.files.len()), (1, "Clipboard", app.clips.len())] {
+        let label = if count > 0 { format!("{name} {count}") } else { name.to_string() };
+        let w = g.width(&label, &g.f.small) + 4.0;
+        let active = app.shelf_tab == tab && !app.dragging;
+        g.text(&label, &g.f.small, [x, t - 3.0, x + w, t + 15.0], if active { WHITE } else { GRAY });
+        if active {
+            g.rrect([x, t + 14.0, x + w - 4.0, t + 15.5], 0.75, ACCENT);
+        }
+        buttons.push(([x - 4.0, t - 5.0, x + w + 4.0, t + 17.0], Action::ShelfTab(tab)));
+        x += w + 12.0;
+    }
+
+    let zone = [l, t + 22.0, r, b - 2.0];
+    let empty = |icon: &str, title: &str, sub: &str, color: u32| {
+        g.dashed(zone, 14.0, color);
+        let cy = (zone[1] + zone[3]) / 2.0;
+        g.text(icon, &g.f.icon_big, [l, cy - 34.0, r, cy - 2.0], WHITE);
+        g.text(title, &g.f.center, [l, cy + 2.0, r, cy + 20.0], WHITE);
+        g.text(sub, &g.f.csmall, [l, cy + 18.0, r, cy + 34.0], GRAY);
+    };
 
     if app.dragging {
-        g.rrect([l, t, r, b], 14.0, 0x1d1a33);
-        g.text("Lepas untuk menaruh di Shelf", &g.f.cbold, [l, t, r, b], WHITE);
-        return;
+        empty("\u{E896}", "Lepas untuk menambahkan", "File tetap di tempat asalnya", ACCENT);
+    } else if app.shelf_tab == 0 {
+        if app.files.is_empty() {
+            return empty("\u{E896}", "Jatuhkan file di sini", "Seret keluar kapan saja \u{B7} klik untuk membuka", DIM);
+        }
+        for (row, path) in app.files.iter().take(ROWS).enumerate() {
+            let y = zone[1] + row as f32 * 26.0;
+            let item = [l, y, r - 26.0, y + 23.0];
+            g.rrect([l, y, r, y + 23.0], 9.0, CARD);
+            g.text("\u{E8A5}", &g.f.icon_small, [l + 6.0, y, l + 24.0, y + 23.0], GRAY);
+            g.text(shelf::file_name(path), &g.f.text, [l + 28.0, y, r - 28.0, y + 23.0], WHITE);
+            buttons.push((item, Action::ShelfOpen(row)));
+            let del = [r - 24.0, y, r, y + 23.0];
+            g.text("\u{E711}", &g.f.icon_small, del, DIM);
+            buttons.push((del, Action::ShelfRemove(row)));
+        }
+        more(g, app.files.len(), [l, b - 4.0, r, b + 10.0]);
+    } else {
+        if app.clips.is_empty() {
+            return empty("\u{E8C8}", "Salin teks apa saja", "Nanti menunggu di sini, siap ditempel lagi", DIM);
+        }
+        for (row, clip) in app.clips.iter().take(ROWS).enumerate() {
+            let y = zone[1] + row as f32 * 26.0;
+            let item = [l, y, r, y + 23.0];
+            let line: String = clip.split_whitespace().collect::<Vec<_>>().join(" ");
+            g.rrect(item, 9.0, CARD);
+            g.text(&line, &g.f.text, [l + 10.0, y, r - 10.0, y + 23.0], WHITE);
+            buttons.push((item, Action::ClipCopy(row)));
+        }
+        more(g, app.clips.len(), [l, b - 4.0, r, b + 10.0]);
     }
+}
 
-    g.text("FILE", &g.f.small, [fl, t, fr, t + 18.0], GRAY);
-    if app.files.is_empty() {
-        g.text("Seret file ke notch", &g.f.small, [fl, t + 22.0, fr, t + 40.0], WHITE);
-        g.text("untuk disimpan sementara", &g.f.small, [fl, t + 38.0, fr, t + 56.0], GRAY);
-    }
-    for (row, path) in app.files.iter().take(ROWS).enumerate() {
-        let y = t + 22.0 + row as f32 * 24.0;
-        g.text("\u{E8A5}", &g.f.icon_small, [fl, y, fl + 16.0, y + 22.0], GRAY);
-        let item = [fl, y, fr - 22.0, y + 22.0];
-        g.text(shelf::file_name(path), &g.f.text, [fl + 20.0, y, fr - 22.0, y + 22.0], WHITE);
-        buttons.push((item, Action::ShelfOpen(row)));
-        let del = [fr - 20.0, y, fr, y + 22.0];
-        g.text("\u{E711}", &g.f.icon_small, del, DIM);
-        buttons.push((del, Action::ShelfRemove(row)));
-    }
-    if app.files.len() > ROWS {
-        g.text(&format!("+{} lagi", app.files.len() - ROWS), &g.f.small, [fl + 20.0, b - 16.0, fr, b], GRAY);
-    }
-
-    g.rrect([mid - 0.5, t + 2.0, mid + 0.5, b - 6.0], 0.5, 0x2a2a2a);
-
-    g.text("CLIPBOARD", &g.f.small, [cl, t, cr, t + 18.0], GRAY);
-    if app.clips.is_empty() {
-        g.text("Teks yang Anda salin", &g.f.small, [cl, t + 22.0, cr, t + 40.0], WHITE);
-        g.text("muncul di sini", &g.f.small, [cl, t + 38.0, cr, t + 56.0], GRAY);
-    }
-    for (row, clip) in app.clips.iter().take(ROWS).enumerate() {
-        let y = t + 22.0 + row as f32 * 24.0;
-        let item = [cl, y, cr, y + 22.0];
-        let line: String = clip.split_whitespace().collect::<Vec<_>>().join(" ");
-        g.rrect(item, 8.0, 0x161616);
-        g.text(&line, &g.f.small, [cl + 8.0, y, cr - 6.0, y + 22.0], WHITE);
-        buttons.push((item, Action::ClipCopy(row)));
-    }
-    if app.clips.len() > ROWS {
-        g.text(&format!("+{} lagi", app.clips.len() - ROWS), &g.f.small, [cl, b - 16.0, cr, b], GRAY);
+fn more(g: &Gfx, total: usize, r: R) {
+    if total > ROWS {
+        g.text(&format!("+{} lagi", total - ROWS), &g.f.rsmall, r, GRAY);
     }
 }

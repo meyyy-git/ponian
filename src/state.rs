@@ -62,7 +62,7 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Ag
 pub fn date_id(dow: u16, day: u16, month: u16, year: u16) -> String {
     let d = DAYS.get(dow as usize).unwrap_or(&"");
     let m = MONTHS.get(month.wrapping_sub(1) as usize).unwrap_or(&"");
-    format!("{d}, {day} {m} {year}")
+    format!("{d} {day} {m} {year}")
 }
 
 #[cfg(test)]
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn indonesian_date() {
-        assert_eq!(date_id(6, 21, 11, 2026), "Sab, 21 Nov 2026");
-        assert_eq!(date_id(0, 1, 5, 2027), "Min, 1 Mei 2027");
+        assert_eq!(date_id(6, 21, 11, 2026), "Sab 21 Nov 2026");
+        assert_eq!(date_id(0, 1, 5, 2027), "Min 1 Mei 2027");
     }
 }

@@ -26,7 +26,7 @@ pub enum Page {
 }
 
 // shortcut: urutan halaman tetap mengikuti daftar ini; user hanya bisa menyalakan atau mematikan.
-pub const ALL: [Page; 8] = [Page::Music, Page::Today, Page::Widgets, Page::Shelf, Page::Pomodoro, Page::Todo, Page::Water, Page::Prayer];
+pub const ALL: [Page; 8] = [Page::Music, Page::Pomodoro, Page::Water, Page::Shelf, Page::Todo, Page::Today, Page::Widgets, Page::Prayer];
 
 impl Page {
     pub fn title(self) -> &'static str {

@@ -1,11 +1,11 @@
 //! Widget kecil: dua di halaman Widget, dipilih di Pengaturan.
 use crate::{
-    App, astro, clock, prayer,
+    App, astro, clock, currency, online, prayer,
     render::{ACCENT, DIM, GRAY, Gfx, R, WHITE},
-    store, water, worldclock,
+    store, water, weather, worldclock,
 };
 
-pub const WIDGETS: [&str; 8] = ["Jam dunia", "Hitung mundur", "Bulan", "Minggu ini", "Salat berikutnya", "Fokus hari ini", "Air hari ini", "Tanggal"];
+pub const WIDGETS: [&str; 10] = ["Jam dunia", "Hitung mundur", "Bulan", "Minggu ini", "Salat berikutnya", "Fokus hari ini", "Air hari ini", "Tanggal", "Cuaca", "Kurs"];
 
 pub fn names() -> Vec<String> {
     WIDGETS.iter().map(|s| s.to_string()).collect()
@@ -127,6 +127,34 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
             title("AIR HARI INI");
             g.text(&water::ml(app.water), &g.f.big, [l, t + 22.0, r, t + 60.0], WHITE);
             g.text(&format!("dari {}", water::ml(app.water_cfg.goal)), &g.f.small, [l, t + 60.0, r, b], GRAY);
+        }
+        8 => {
+            title("CUACA");
+            match online::WEATHER.lock().unwrap().clone() {
+                Some(w) => {
+                    let (desc, icon) = weather::describe(&w.symbol);
+                    g.text(icon, &g.f.big, [r - 44.0, t + 18.0, r, t + 56.0], WHITE);
+                    g.text(&format!("{:.0}\u{B0}", w.temp), &g.f.big, [l, t + 18.0, r - 36.0, t + 56.0], WHITE);
+                    g.text(desc, &g.f.text, [l, t + 56.0, r, t + 74.0], WHITE);
+                    g.text(&format!("{:.0}\u{B0} \u{2013} {:.0}\u{B0} \u{B7} MET Norway", w.min, w.max), &g.f.small, [l, t + 72.0, r, b], GRAY);
+                }
+                None => g.text(if crate::location::current().is_some() { "Memuat cuaca\u{2026}" } else { "Atur lokasi di Pengaturan" }, &g.f.small, [l, t + 22.0, r, b], GRAY),
+            }
+        }
+        9 => {
+            title("KURS");
+            let main = currency::MAIN[(crate::settings::dword("Rates.Main", 0) as usize).min(currency::MAIN.len() - 1)];
+            match online::RATES.lock().unwrap().clone() {
+                Some(rates) => {
+                    for (row, code) in currency::MAIN.iter().filter(|c| **c != main).take(3).enumerate() {
+                        let y = t + 22.0 + row as f32 * 22.0;
+                        g.text(&format!("1 {code}"), &g.f.text, [l, y, l + 60.0, y + 22.0], GRAY);
+                        let v = currency::convert(&rates, 1.0, code, main).map_or("-".into(), |v| currency::format(v, main));
+                        g.text(&v, &g.f.rbold, [l + 50.0, y, r, y + 22.0], WHITE);
+                    }
+                }
+                None => g.text("Memuat kurs\u{2026}", &g.f.small, [l, t + 22.0, r, b], GRAY),
+            }
         }
         _ => {
             let (y, m, d) = astro::hijri(now.day);

@@ -2,13 +2,17 @@
 //! Ponian: notch untuk Windows.
 
 mod astro;
+mod calendar;
 mod clock;
+mod currency;
 mod features;
 mod input;
 mod location;
 mod lyrics;
 mod media;
+mod net;
 mod notify;
+mod online;
 mod pages;
 mod pomodoro;
 mod power;
@@ -23,6 +27,7 @@ mod todo;
 mod tray;
 mod volume;
 mod water;
+mod weather;
 mod worldclock;
 
 use features::WaterCfg;
@@ -59,6 +64,7 @@ pub const WM_APP_CAPS: u32 = WM_APP + 7;
 pub const WM_APP_NOTIFY: u32 = WM_APP + 8;
 pub const WM_APP_NET: u32 = WM_APP + 9;
 pub const WM_APP_AUDIODEV: u32 = WM_APP + 11;
+pub const WM_APP_ONLINE: u32 = WM_APP + 12;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const PBT_POWERSETTINGCHANGE: u32 = 0x8013;
 const WM_APP_OPEN_SETTINGS: u32 = WM_APP + 5;
@@ -521,6 +527,7 @@ impl App {
                 WM_APP_NOTIFY => self.on_notify(),
                 WM_APP_NET => self.on_net(),
                 WM_APP_AUDIODEV => self.on_audio_device(),
+                WM_APP_ONLINE if self.view == View::Expanded => self.draw(),
                 WM_POWERBROADCAST if wp.0 as u32 == PBT_POWERSETTINGCHANGE => {
                     // pemberitahuan pertama datang saat didaftarkan, bukan karena user mengubah kecerahan
                     if let Some(pct) = system::brightness(lp) {
@@ -611,6 +618,7 @@ impl App {
                 }
                 settings::WM_APP_SETTINGS => {
                     self.reload();
+                    online::FORCE.store(true, Relaxed);
                     let _ = self.tx.send(Msg::Refresh);
                     if let Ok((gfx, scale)) = Self::place(self.hwnd) {
                         (self.gfx, self.scale) = (gfx, scale);
@@ -765,6 +773,16 @@ fn sections() -> Vec<Section> {
                 Item::Choice("Clip.Limit", "Jumlah riwayat clipboard", || opts(&["5", "10", "20", "50"]), 1),
                 Item::Check("Clip.Keep", "Ingat riwayat clipboard setelah Ponian ditutup", false),
                 Item::Note("Teks dari password manager yang menandai isinya rahasia tidak ikut disimpan."),
+            ],
+        },
+        Section {
+            name: "Internet",
+            items: vec![
+                Item::Check("Weather.On", "Cuaca (data MET Norway, memakai lokasi dari bagian Salat)", true),
+                Item::Check("Rates.On", "Kurs mata uang (data Bank Sentral Eropa lewat Frankfurter)", true),
+                Item::Choice("Rates.Main", "Mata uang utama", || currency::MAIN.iter().map(|c| c.to_string()).collect(), 0),
+                Item::Text("Calendar", "Link iCal rahasia (Google Calendar: Setelan \u{203A} Alamat rahasia dalam format iCal)", true),
+                Item::Note("Link kalender disimpan terenkripsi. Acara hari ini tampil di halaman To-do."),
             ],
         },
         Section {
@@ -936,6 +954,7 @@ fn main() -> Result<()> {
         shelf::register(hwnd);
         system::register(hwnd);
         notify::spawn(hwnd.0 as isize);
+        online::spawn(hwnd.0 as isize);
         app.update();
         APP.set(Some(app));
         if open_settings {

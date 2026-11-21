@@ -1,8 +1,6 @@
 //! Lirik tersinkron per baris dari LRCLIB (https://lrclib.net/docs).
 use windows::{
     Data::Json::{JsonArray, JsonObject},
-    Foundation::Uri,
-    Web::Http::HttpClient,
     core::HSTRING,
 };
 
@@ -101,13 +99,11 @@ fn synced(o: &JsonObject) -> Option<String> {
 }
 
 fn esc(s: &str) -> Option<String> {
-    Some(Uri::EscapeComponent(&HSTRING::from(s)).ok()?.to_string())
+    crate::net::escape(s)
 }
 
 fn http(url: &str) -> Option<HSTRING> {
-    let client = HttpClient::new().ok()?;
-    client.DefaultRequestHeaders().ok()?.UserAgent().ok()?.TryParseAdd(&HSTRING::from("Ponian/0.1")).ok()?;
-    client.GetStringAsync(&Uri::CreateUri(&HSTRING::from(url)).ok()?).ok()?.join().ok()
+    crate::net::get(url).map(HSTRING::from)
 }
 
 #[cfg(test)]

@@ -49,6 +49,10 @@ pub struct Fonts {
     pub icon_small: IDWriteTextFormat,
     pub icon_mid: IDWriteTextFormat,
     pub icon_big: IDWriteTextFormat,
+    /// judul bagian di jendela Pengaturan
+    pub title: IDWriteTextFormat,
+    /// teks yang boleh turun baris (label dan keterangan di Pengaturan), rata atas
+    pub wrap: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -124,7 +128,11 @@ impl Gfx {
                 icon_small: font(mdl, 9.5, normal, center)?,
                 icon_mid: font(mdl, 12.5, normal, center)?,
                 icon_big: font(mdl, 24.0, normal, center)?,
+                title: font(ui, 19.0, semi, left)?,
+                wrap: font(ui, 12.5, normal, left)?,
             };
+            f.wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            f.wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
             Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(Vec::new()), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h }, bits, bound: Cell::new(h) })
         }
     }
@@ -179,6 +187,45 @@ impl Gfx {
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8, ..Default::default() };
             let _ = UpdateLayeredWindow(hwnd, Some(screen), None, Some(&self.size), Some(self.dc), Some(&POINT::default()), COLORREF(0), Some(&blend), ULW_ALPHA);
             ReleaseDC(None, screen);
+        }
+    }
+
+    /// Selesaikan gambar dan salin ke `dc` jendela biasa (bukan layered). Alpha ikut tersalin, jadi
+    /// piksel tembus pandang memperlihatkan latar kaca DWM di belakangnya.
+    pub fn present(&self, dc: HDC) {
+        unsafe {
+            let _ = self.rt.EndDraw(None, None);
+            let _ = BitBlt(dc, 0, 0, self.size.cx, self.size.cy, Some(self.dc), 0, 0, SRCCOPY);
+        }
+    }
+
+    /// Garis tepi persegi membulat.
+    pub fn stroke(&self, r: R, radius: f32, rgb: u32, width: f32) {
+        self.color(rgb);
+        unsafe { self.rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(r), radiusX: radius, radiusY: radius }, &self.brush, width, NO_STYLE) }
+    }
+
+    /// Bulatan warna yang memudar ke tepi (hiasan latar kaca).
+    pub fn blob(&self, cx: f32, cy: f32, rad: f32, rgb: u32, a: f32) {
+        unsafe {
+            let stops = [D2D1_GRADIENT_STOP { position: 0.0, color: self.rgba(rgb, a) }, D2D1_GRADIENT_STOP { position: 1.0, color: self.rgba(rgb, 0.0) }];
+            let Ok(collection) = self.rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
+            let center = Vector2 { X: cx, Y: cy };
+            let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES { center, gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 }, radiusX: rad, radiusY: rad };
+            let Ok(brush) = self.rt.CreateRadialGradientBrush(&props, None, &collection) else { return };
+            self.rt.FillEllipse(&D2D1_ELLIPSE { point: center, radiusX: rad, radiusY: rad }, &brush);
+        }
+    }
+
+    /// Tinggi teks dalam DIP kalau dibungkus selebar `width` (untuk format yang boleh turun baris).
+    pub fn height(&self, s: &str, format: &IDWriteTextFormat, width: f32) -> f32 {
+        let utf16: Vec<u16> = s.encode_utf16().collect();
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe {
+            match self.dw.CreateTextLayout(&utf16, format, width, 2000.0) {
+                Ok(layout) if layout.GetMetrics(&mut m).is_ok() => m.height,
+                _ => 18.0,
+            }
         }
     }
 

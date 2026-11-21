@@ -25,6 +25,8 @@ pub const WM_APP_INPUT: u32 = WM_APP + 4;
 pub const SUBMIT: isize = 1;
 pub const CANCEL: isize = 0;
 pub const TAB: isize = 2;
+/// klik di luar kotak: kotak ditutup dan teksnya tetap dikirim, pemilik yang memutuskan dipakai atau tidak
+pub const BLUR: isize = 3;
 
 const BG: COLORREF = COLORREF(0x00262626);
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -49,7 +51,23 @@ pub fn is_open() -> bool {
     INPUT.with_borrow(|i| i.is_some())
 }
 
-/// Teks yang dikirim terakhir kali (diambil sekali setelah WM_APP_INPUT dengan SUBMIT atau TAB).
+/// Jendela yang sedang memakai kotak teks.
+pub fn owner() -> Option<HWND> {
+    INPUT.with_borrow(|i| i.as_ref().map(|i| i.owner))
+}
+
+/// Samarkan isi kotak yang sedang terbuka (untuk data rahasia).
+pub fn mask() {
+    const EM_SETPASSWORDCHAR: u32 = 0x00CC;
+    if let Some(edit) = INPUT.with_borrow(|i| i.as_ref().map(|i| i.edit)) {
+        unsafe {
+            SendMessageW(edit, EM_SETPASSWORDCHAR, Some(WPARAM(0x25CF)), None);
+            let _ = InvalidateRect(Some(edit), None, true);
+        }
+    }
+}
+
+/// Teks yang dikirim terakhir kali (diambil sekali setelah WM_APP_INPUT dengan SUBMIT, TAB, atau BLUR).
 pub fn take_text() -> Option<String> {
     LAST.with_borrow_mut(|l| l.take())
 }
@@ -129,7 +147,7 @@ pub fn close() {
 fn finish(result: isize) {
     let msg = INPUT.with_borrow_mut(|i| {
         let i = i.as_mut()?;
-        if result == SUBMIT || result == TAB {
+        if result != CANCEL {
             let mut buf = vec![0u16; unsafe { GetWindowTextLengthW(i.edit) } as usize + 1];
             let n = unsafe { GetWindowTextW(i.edit, &mut buf) } as usize;
             LAST.set(Some(String::from_utf16_lossy(&buf[..n])));
@@ -168,10 +186,10 @@ extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> L
                 let brush = INPUT.with_borrow(|i| i.as_ref().map(|i| i.brush)).unwrap_or_default();
                 LRESULT(brush.0 as isize)
             }
-            // klik di luar kotak teks dianggap batal
+            // klik di luar kotak teks: notch menganggapnya batal, jendela Pengaturan menyimpannya
             WM_ACTIVATE if (wp.0 & 0xffff) as u32 == WA_INACTIVE => {
                 if is_open() {
-                    finish(CANCEL);
+                    finish(BLUR);
                 }
                 LRESULT(0)
             }

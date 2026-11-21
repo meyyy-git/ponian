@@ -321,7 +321,7 @@ impl App {
         let view = state::view(Inputs {
             hidden: self.user_hidden || self.fullscreen,
             // kotak teks yang terbuka menahan notch tetap terbuka
-            hover: (self.hover && !clickable) || input::is_open() || self.dragging,
+            hover: (self.hover && !clickable) || input::owner() == Some(self.hwnd) || self.dragging,
             ringing: self.ringing(),
             hud: self.hud.is_some(),
             // pill melebar hanya kalau ada lirik untuk ditampilkan; tanpa lirik cukup ikon audio yang bergerak
@@ -1024,10 +1024,10 @@ fn monitors() -> Vec<(HMONITOR, RECT, bool)> {
 fn sections() -> Vec<Section> {
     // halaman dulu (indeksnya dipakai tombol naik/turun), keterangan di akhir
     let mut page_items: Vec<Item> = pages::ordered().into_iter().map(|p| Item::Movable(p.key(), p.title(), true, pages::move_page)).collect();
-    page_items.push(Item::Note("Centang untuk menampilkan halaman; tombol panah mengubah urutannya di notch."));
+    page_items.push(Item::Note("Sakelar menampilkan atau menyembunyikan halaman; tombol panah mengubah urutannya di notch."));
     vec![
         Section {
-            name: "Umum",
+            name: "Umum", icon: "\u{E713}",
             items: vec![
                 Item::Check(settings::AUTOSTART, "Jalankan saat Windows menyala", false),
                 Item::Check("HideFullscreen", "Sembunyikan saat ada app layar penuh (game, video, presentasi)", true),
@@ -1035,7 +1035,7 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Tampilan",
+            name: "Tampilan", icon: "\u{E771}",
             items: vec![
                 Item::Choice("Size", "Ukuran notch", || opts(&["Kecil", "Sedang", "Besar", "Sangat besar"]), 1),
                 Item::Choice(
@@ -1047,23 +1047,23 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Musik",
+            name: "Musik", icon: "\u{E8D6}",
             items: vec![
                 Item::Check("ShowLyrics", "Tampilkan lirik", true),
                 Item::Note("Lirik diambil dari LRCLIB (lrclib.net). Judul dan artis lagu dikirim ke sana."),
                 Item::Choice("LyricOffset", "Majukan lirik", || opts(&["Mati", "0,3 detik", "0,6 detik", "1 detik"]), 0),
             ],
         },
-        Section { name: "Halaman", items: page_items },
+        Section { name: "Halaman", icon: "\u{E7C3}", items: page_items },
         Section {
-            name: "Timer",
+            name: "Timer", icon: "\u{E916}",
             items: vec![
                 Item::Check("Sound", "Bunyi saat timer habis dan untuk semua pengingat", true),
                 Item::Note("Durasi timer dipilih langsung di halaman Timer."),
             ],
         },
         Section {
-            name: "To-do",
+            name: "To-do", icon: "\u{E9D5}",
             items: vec![
                 Item::Note("Tulis jam di awal atau akhir tugas untuk pengingat, misalnya \u{201C}Rapat 14:30\u{201D}."),
                 Item::Check("Todo.Remind", "Ingatkan saat jam tugas tiba", true),
@@ -1071,7 +1071,7 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Salat",
+            name: "Salat", icon: "\u{E708}",
             items: vec![
                 Item::Choice("Prayer.Method", "Metode perhitungan", || prayer::METHODS.iter().map(|m| m.name.to_string()).collect(), 0),
                 Item::Check("Prayer.Hanafi", "Asar mazhab Hanafi (bayangan dua kali panjang benda)", false),
@@ -1083,7 +1083,7 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Sistem",
+            name: "Sistem", icon: "\u{E7F4}",
             items: vec![
                 Item::Note("Indikator yang muncul di notch:"),
                 Item::Check("Hud.Volume", "Volume", true),
@@ -1097,7 +1097,7 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Notifikasi",
+            name: "Notifikasi", icon: "\u{EA8F}",
             items: vec![
                 Item::Check("Notify.On", "Tampilkan notifikasi app di notch", true),
                 Item::Check("Notify.Preview", "Tampilkan isi pesan", false),
@@ -1106,7 +1106,7 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Shelf",
+            name: "Shelf", icon: "\u{E896}",
             items: vec![
                 Item::Check("Shelf.Clear", "Kosongkan Shelf setiap Ponian dibuka", true),
                 Item::Check("Clip.On", "Simpan riwayat clipboard (teks, gambar, dan file yang Anda salin)", true),
@@ -1116,14 +1116,14 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Salin teks layar",
+            name: "Salin teks layar", icon: "\u{E8C8}",
             items: vec![
                 Item::Check("Ocr.On", "Salin teks dari layar (OCR) dengan Ctrl+Alt+T: pilih area, teksnya disalin", true),
                 Item::Note("OCR memakai mesin bawaan Windows dan berjalan offline."),
             ],
         },
         Section {
-            name: "Internet",
+            name: "Internet", icon: "\u{E774}",
             items: vec![
                 Item::Check("Weather.On", "Cuaca (data MET Norway, memakai lokasi dari bagian Salat)", true),
                 Item::Check("Rates.On", "Kurs mata uang (data Bank Sentral Eropa lewat Frankfurter)", true),
@@ -1134,7 +1134,7 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "Widget",
+            name: "Widget", icon: "\u{E8A9}",
             items: vec![
                 Item::Choice("Widget.Left", "Widget kiri", pages::widgets::names, 0),
                 Item::Choice("Widget.Right", "Widget kanan", pages::widgets::names, 1),
@@ -1258,6 +1258,7 @@ fn main() -> Result<()> {
         let (gfx, scale) = (Gfx::new(w, h, dpi)?, dpi / 96.0);
         settings::NOTCH.store(hwnd.0 as isize, Relaxed);
         let _ = settings::SECTIONS.set(sections);
+        settings::dark_menus();
         tray::add(hwnd);
         SetTimer(Some(hwnd), T_POLL, 1000, None);
 

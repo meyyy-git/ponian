@@ -1,5 +1,6 @@
-# Menggambar ikon Ponian dan menyusunnya menjadi ponian.ico + ponian.res (resource yang ditautkan build.rs).
-# Jalankan dari folder mana pun: powershell -File assets\make-icon.ps1
+# Menggambar ikon Ponian dan menyusun ponian.ico, ponian.rc (ikon + keterangan versi), dan ponian.res
+# (resource yang ditautkan build.rs). Jalankan lagi setiap versi di Cargo.toml berubah:
+# powershell -File assets\make-icon.ps1
 Add-Type -AssemblyName System.Drawing
 $dir = $PSScriptRoot
 function RoundPath([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
@@ -58,6 +59,40 @@ for ($i = 0; $i -lt $sizes.Count; $i++) {
     $w.Write([int16]1); $w.Write([int16]32); $w.Write([int]$images[$i].Length); $w.Write([int]$offset); $offset += $images[$i].Length
 }
 foreach ($img in $images) { $w.Write($img) }; $w.Flush(); [IO.File]::WriteAllBytes("$dir\ponian.ico", $out.ToArray())
+
+# keterangan versi exe (nama, versi, pembuat di Task Manager dan Properties) mengikuti Cargo.toml
+$version = ([regex]::Match((Get-Content "$dir\..\Cargo.toml" -Raw), '(?m)^version\s*=\s*"([^"]+)"')).Groups[1].Value
+$numbers = ($version -replace '\.', ',') + ',0'
+$rcText = @"
+1 ICON "ponian.ico"
+
+1 VERSIONINFO
+FILEVERSION $numbers
+PRODUCTVERSION $numbers
+FILEOS 0x40004L
+FILETYPE 0x1L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "kucingbebal"
+      VALUE "FileDescription", "Ponian"
+      VALUE "FileVersion", "$version"
+      VALUE "InternalName", "ponian"
+      VALUE "LegalCopyright", "Copyright (c) 2026 kucingbebal"
+      VALUE "OriginalFilename", "ponian.exe"
+      VALUE "ProductName", "Ponian"
+      VALUE "ProductVersion", "$version"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"@
+[IO.File]::WriteAllText("$dir\ponian.rc", $rcText, [Text.Encoding]::ASCII)
 
 $rc = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter rc.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
 if (-not $rc) { Write-Error "rc.exe (Windows SDK) tidak ditemukan; ponian.res tidak diperbarui"; exit 1 }

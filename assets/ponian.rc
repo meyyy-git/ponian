@@ -1,1 +1,27 @@
 1 ICON "ponian.ico"
+
+1 VERSIONINFO
+FILEVERSION 0,1,1,0
+PRODUCTVERSION 0,1,1,0
+FILEOS 0x40004L
+FILETYPE 0x1L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "kucingbebal"
+      VALUE "FileDescription", "Ponian"
+      VALUE "FileVersion", "0.1.1"
+      VALUE "InternalName", "ponian"
+      VALUE "LegalCopyright", "Copyright (c) 2026 kucingbebal"
+      VALUE "OriginalFilename", "ponian.exe"
+      VALUE "ProductName", "Ponian"
+      VALUE "ProductVersion", "0.1.1"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

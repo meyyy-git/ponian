@@ -6,9 +6,9 @@ use windows::{
     core::{HSTRING, PCWSTR, w},
 };
 
-/// Identitas app untuk layanan luar. MET Norway mewajibkan kontak di sini.
-// shortcut: kontak masih placeholder; ganti dengan URL repo atau email resmi sebelum rilis publik.
-pub const USER_AGENT: &str = "Ponian/0.1 (+https://github.com/ponian-app)";
+/// Identitas app untuk semua layanan luar. MET Norway mewajibkan kontak di sini; alamat repo dipakai
+/// supaya mereka bisa menghubungi lewat issue.
+pub const USER_AGENT: &str = "Ponian/0.1 (+https://github.com/meyyy-git/ponian)";
 
 /// Respons dibatasi supaya server yang salah tidak menghabiskan memori.
 const MAX_BODY: usize = 4 * 1024 * 1024;

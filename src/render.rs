@@ -81,19 +81,7 @@ impl Gfx {
                 ..Default::default()
             })?;
             let dc = CreateCompatibleDC(None);
-            let info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: w,
-                    biHeight: -h,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            let mut bits = std::ptr::null_mut();
-            let bmp = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)?;
+            let bmp = dib(dc, w, h)?;
             let old = SelectObject(dc, bmp.into());
             rt.BindDC(dc, &RECT { left: 0, top: 0, right: w, bottom: h })?;
             rt.SetDpi(dpi, dpi);
@@ -136,6 +124,21 @@ impl Gfx {
             };
             Ok(Self { factory, dw, rt, brush, dash, art: RefCell::new(None), f, alpha: Cell::new(1.0), dc, bmp, old, size: SIZE { cx: w, cy: h } })
         }
+    }
+
+    /// Ganti ukuran atau DPI permukaan gambar tanpa membuat ulang objek Direct2D.
+    pub fn resize(&mut self, w: i32, h: i32, dpi: f32) -> Result<()> {
+        unsafe {
+            if (w, h) != (self.size.cx, self.size.cy) {
+                let bmp = dib(self.dc, w, h)?;
+                SelectObject(self.dc, bmp.into());
+                let _ = DeleteObject(self.bmp.into());
+                (self.bmp, self.size) = (bmp, SIZE { cx: w, cy: h });
+                self.rt.BindDC(self.dc, &RECT { left: 0, top: 0, right: w, bottom: h })?;
+            }
+            self.rt.SetDpi(dpi, dpi);
+        }
+        Ok(())
     }
 
     pub fn begin(&self) {
@@ -329,6 +332,16 @@ impl Drop for Gfx {
             let _ = DeleteDC(self.dc);
         }
     }
+}
+
+/// Bitmap 32-bit dengan baris dari atas, tempat Direct2D menggambar.
+fn dib(dc: HDC, w: i32, h: i32) -> Result<HBITMAP> {
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, ..Default::default() },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    unsafe { CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) }
 }
 
 fn rect(r: R) -> D2D_RECT_F {

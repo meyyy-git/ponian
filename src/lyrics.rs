@@ -99,7 +99,7 @@ fn synced(o: &JsonObject) -> Option<String> {
 }
 
 fn esc(s: &str) -> Option<String> {
-    crate::net::escape(s)
+    Some(crate::net::escape(s))
 }
 
 fn http(url: &str) -> Option<HSTRING> {

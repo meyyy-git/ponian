@@ -35,8 +35,12 @@ pub fn refresh(notch: isize) {
             let p = Geolocator::new()?.GetGeopositionAsync()?.join()?.Coordinate()?.Point()?.Position()?;
             Ok((p.Latitude, p.Longitude))
         })();
-        if let Ok((lat, lon)) = found {
-            settings::set_string("WindowsLocation", &format!("{lat:.4}, {lon:.4}"));
+        // dibulatkan ke 2 desimal (sekitar 1 km) supaya geseran kecil tidak memicu muat ulang
+        if let Ok((lat, lon)) = found
+            && let text = format!("{lat:.2}, {lon:.2}")
+            && text != settings::string("WindowsLocation")
+        {
+            settings::set_string("WindowsLocation", &text);
             let _ = unsafe { PostMessageW(Some(HWND(notch as _)), settings::WM_APP_SETTINGS, WPARAM(0), LPARAM(0)) };
         }
     });

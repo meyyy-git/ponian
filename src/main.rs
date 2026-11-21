@@ -90,6 +90,10 @@ const T_TICK: usize = 2;
 const T_POLL: usize = 3;
 const T_HOVER: usize = 4;
 const T_HUD: usize = 5;
+/// menyala tepat di awal baris lirik berikutnya
+const T_LYRIC: usize = 6;
+/// lama transisi antarbaris lirik
+const LYRIC_SECS: f32 = 0.42;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Hud {
@@ -169,6 +173,11 @@ pub struct App {
     press: Option<(f32, f32, usize)>,
     /// tab halaman Shelf: 0 = File, 1 = Clipboard
     shelf_tab: u8,
+    /// baris lirik yang tampil, baris sebelumnya, dan kapan pergantiannya dimulai
+    lyric_idx: Option<usize>,
+    lyric_cur: String,
+    lyric_prev: String,
+    lyric_since: Option<Instant>,
     brightness_ready: bool,
     layout: (isize, isize),
     battery_band: u8,
@@ -308,8 +317,14 @@ impl App {
             }
             if t >= state::SPRING_SECS {
                 (self.anim_start, self.fade, self.cur) = (None, false, self.to);
-                let _ = unsafe { KillTimer(Some(self.hwnd), T_ANIM) };
             }
+        }
+        if self.lyric_since.is_some_and(|s| s.elapsed().as_secs_f32() >= LYRIC_SECS) {
+            self.lyric_since = None;
+        }
+        // timer animasi hidup selama masih ada yang bergerak: ukuran notch atau baris lirik
+        if self.anim_start.is_none() && self.lyric_since.is_none() {
+            let _ = unsafe { KillTimer(Some(self.hwnd), T_ANIM) };
         }
 
         let mut buttons = Vec::new();
@@ -335,6 +350,41 @@ impl App {
         }
         g.end(self.hwnd);
         self.buttons = buttons;
+    }
+
+    /// Cocokkan baris lirik dengan posisi putar. Kalau barisnya berganti saat pill lirik tampil, mulai
+    /// transisi; lalu pasang timer tepat di awal baris berikutnya supaya pergantiannya tidak telat.
+    fn sync_lyric(&mut self) {
+        let m = &self.media;
+        let Some(lines) = m.lyrics.clone().filter(|_| m.session && m.playing) else {
+            let _ = unsafe { KillTimer(Some(self.hwnd), T_LYRIC) };
+            (self.lyric_idx, self.lyric_since) = (None, None);
+            self.lyric_cur.clear();
+            return;
+        };
+        let pos = self.lyric_pos();
+        let mut idx = lyrics::active(&lines, pos);
+        // laporan posisi dari pemutar bisa mundur sepersekian detik; jangan bolak-balik ke baris sebelumnya
+        if let Some(shown) = self.lyric_idx
+            && idx.map_or(0, |i| i + 1) == shown
+            && lines.get(shown).is_some_and(|l| l.0 - pos < 500)
+        {
+            idx = Some(shown);
+        }
+        // jeda instrumental (baris kosong) menampilkan judul lagu
+        let text = idx.map(|i| lines[i].1.as_str()).filter(|s| !s.is_empty()).unwrap_or(&m.title).to_string();
+        if idx != self.lyric_idx || text != self.lyric_cur {
+            self.lyric_idx = idx;
+            let prev = std::mem::replace(&mut self.lyric_cur, text);
+            if self.view == View::Compact && !prev.is_empty() {
+                (self.lyric_prev, self.lyric_since) = (prev, Some(Instant::now()));
+                unsafe { SetTimer(Some(self.hwnd), T_ANIM, 16, None) };
+            }
+        }
+        match lines.get(idx.map_or(0, |i| i + 1)) {
+            Some(next) => drop(unsafe { SetTimer(Some(self.hwnd), T_LYRIC, (next.0 - pos).clamp(15, 60_000) as u32, None) }),
+            None => drop(unsafe { KillTimer(Some(self.hwnd), T_LYRIC) }),
+        }
     }
 
     /// Jam dengan AM/PM kecil (kalau format Windows memakainya), ditengahkan di `cx`.
@@ -378,9 +428,19 @@ impl App {
             }
             // pill lirik: baris yang sedang dinyanyikan, dengan pendar warna cover
             View::Compact => {
-                let line = m.lyrics.as_ref().and_then(|l| Some(l[lyrics::active(l, self.lyric_pos())?].1.as_str())).filter(|s| !s.is_empty());
                 g.text(NOTE, &g.f.icon, [x0 + 12.0, 0.0, x0 + 38.0, h], tint);
-                g.text(line.unwrap_or(&m.title), &g.f.cbold, [x0 + 40.0, 0.0, x1 - 22.0, h], WHITE);
+                let (l, r) = (x0 + 40.0, x1 - 22.0);
+                let cur = if self.lyric_cur.is_empty() { &m.title } else { &self.lyric_cur };
+                // baris lama naik sambil memudar, baris baru naik dari bawah sambil muncul
+                let e = self.lyric_since.map_or(1.0, |s| 1.0 - (1.0 - (s.elapsed().as_secs_f32() / LYRIC_SECS).min(1.0)).powi(3));
+                let (k, shift) = (g.alpha.get(), h * 0.5);
+                if e < 1.0 {
+                    g.alpha.set(k * (1.0 - e).powi(2));
+                    g.text(&self.lyric_prev, &g.f.cbold, [l, -shift * e, r, h - shift * e], WHITE);
+                }
+                g.alpha.set(k * e);
+                g.text(cur, &g.f.cbold, [l, shift * (1.0 - e), r, h + shift * (1.0 - e)], WHITE);
+                g.alpha.set(k);
             }
             View::Hud => match self.hud {
                 Some(Hud::Volume) => {
@@ -506,8 +566,18 @@ impl App {
         self.go((self.page as isize + by).rem_euclid(self.pages.len() as isize) as usize);
     }
 
-    /// Letakkan window di tengah-atas monitor pilihan dan buat ulang permukaan gambar untuk DPI dan ukuran sekarang.
-    fn place(hwnd: HWND) -> Result<(Gfx, f32)> {
+    /// Sesuaikan posisi dan ukuran setelah setting, monitor, atau DPI berubah.
+    /// Permukaan gambar diubah ukurannya di tempat: membuat ulang Direct2D menahan belasan MB yang tidak kembali.
+    fn relayout(&mut self) {
+        if let Ok((w, h, dpi)) = Self::place(self.hwnd)
+            && self.gfx.resize(w, h, dpi).is_ok()
+        {
+            self.scale = dpi / 96.0;
+        }
+    }
+
+    /// Letakkan window di tengah-atas monitor pilihan; mengembalikan (lebar, tinggi, dpi) permukaan gambarnya.
+    fn place(hwnd: HWND) -> Result<(i32, i32, f32)> {
         unsafe {
             let monitors = monitors();
             let pick = settings::dword("Monitor", 0) as usize;
@@ -521,7 +591,7 @@ impl App {
             let (w, h) = ((WIN.0 * scale).ceil() as i32, (WIN.1 * scale).ceil() as i32);
             let x = rc.left + (rc.right - rc.left - w) / 2;
             SetWindowPos(hwnd, Some(HWND_TOPMOST), x, rc.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)?;
-            Ok((Gfx::new(w, h, dpi)?, scale))
+            Ok((w, h, dpi))
         }
     }
 
@@ -601,7 +671,14 @@ impl App {
                     T_TICK => {
                         if self.pomo_tick() {
                             self.update();
-                        } else if self.anim_start.is_none() && self.view != View::Hidden {
+                        } else if self.anim_start.is_none() && !matches!(self.view, View::Hidden | View::Compact) {
+                            // pill lirik digambar ulang oleh T_LYRIC tepat saat barisnya berganti
+                            self.draw();
+                        }
+                    }
+                    T_LYRIC => {
+                        self.sync_lyric();
+                        if self.lyric_since.is_none() && self.view == View::Compact {
                             self.draw();
                         }
                     }
@@ -637,6 +714,7 @@ impl App {
                 },
                 WM_APP_MEDIA => {
                     self.media = media::MEDIA.lock().unwrap().clone().unwrap_or_default();
+                    self.sync_lyric();
                     let track = format!("{}\n{}", self.media.title, self.media.artist);
                     if self.media.playing && !self.media.title.is_empty() && track != self.last_track {
                         self.last_track = track;
@@ -670,19 +748,16 @@ impl App {
                 }
                 settings::WM_APP_SETTINGS => {
                     self.reload();
+                    self.sync_lyric();
                     self.hotkeys();
                     online::FORCE.store(true, Relaxed);
                     let _ = self.tx.send(Msg::Refresh);
-                    if let Ok((gfx, scale)) = Self::place(self.hwnd) {
-                        (self.gfx, self.scale) = (gfx, scale);
-                    }
+                    self.relayout();
                     self.update();
                 }
                 WM_DISPLAYCHANGE | WM_DPICHANGED => {
-                    if let Ok((gfx, scale)) = Self::place(self.hwnd) {
-                        (self.gfx, self.scale) = (gfx, scale);
-                        self.draw();
-                    }
+                    self.relayout();
+                    self.draw();
                 }
                 _ => {}
             }
@@ -970,7 +1045,8 @@ fn main() -> Result<()> {
             Some(instance),
             None,
         )?;
-        let (gfx, scale) = App::place(hwnd)?;
+        let (w, h, dpi) = App::place(hwnd)?;
+        let (gfx, scale) = (Gfx::new(w, h, dpi)?, dpi / 96.0);
         settings::NOTCH.store(hwnd.0 as isize, Relaxed);
         let _ = settings::SECTIONS.set(sections);
         tray::add(hwnd);
@@ -1002,6 +1078,10 @@ fn main() -> Result<()> {
             dragging: false,
             press: None,
             shelf_tab: 0,
+            lyric_idx: None,
+            lyric_cur: String::new(),
+            lyric_prev: String::new(),
+            lyric_since: None,
             brightness_ready: false,
             layout: (0, 0),
             battery_band: 0,

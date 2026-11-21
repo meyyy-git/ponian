@@ -56,7 +56,7 @@ impl App {
     }
 
     pub fn alert(&mut self, icon: &'static str, text: String, task: Option<String>) {
-        self.alert = Some(Alert { icon, text, task });
+        self.alert = Some(Alert { icon, text, task, open: None });
         self.beep();
         self.show_hud_for(Hud::Alert, 30_000);
     }
@@ -66,7 +66,7 @@ impl App {
         if self.hud == Some(Hud::Alert) {
             return;
         }
-        self.alert = Some(Alert { icon, text, task: None });
+        self.alert = Some(Alert { icon, text, task: None, open: None });
         self.show_hud_for(Hud::Info, ms);
     }
 
@@ -74,9 +74,9 @@ impl App {
         if !settings::flag("Clip.On", true) {
             return;
         }
-        if let Some(text) = shelf::read_text(self.hwnd) {
+        if let Some(clip) = shelf::read(self.hwnd) {
             let limit = [5, 10, 20, 50][(settings::dword("Clip.Limit", 1) as usize).min(3)];
-            shelf::remember(&mut self.clips, text, limit);
+            shelf::remember(&mut self.clips, clip, limit);
             shelf::save_clips(&self.clips);
         }
     }
@@ -144,6 +144,11 @@ impl App {
             format!("{} \u{B7} pesan baru", last.app)
         };
         self.info("\u{EA8F}", text, 6000);
+        // info() tidak menimpa pengingat yang sedang tampil, jadi tautan app hanya dipasang pada popup notifikasi;
+        // kalau notch sedang dibuka user, popupnya tidak tampil dan halaman tidak diganggu
+        if self.hud == Some(Hud::Info) && self.view != crate::state::View::Expanded && !last.aumid.is_empty() {
+            self.alert.as_mut().map(|a| a.open = Some(last.aumid));
+        }
     }
 
     pub fn on_battery(&mut self, plugged: bool, pct: u8) {
@@ -344,8 +349,8 @@ impl App {
                 }
             }
             Action::ClipCopy(i) => {
-                if let Some(text) = self.clips.get(i).cloned() {
-                    shelf::write_text(self.hwnd, &text);
+                if let Some(clip) = self.clips.get(i) {
+                    shelf::write(self.hwnd, clip);
                     self.info("\u{E8C8}", "Disalin ke clipboard".into(), 1500);
                 }
             }

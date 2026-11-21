@@ -24,8 +24,15 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
         }
     }
     let tx = l + 78.0;
+    // lebih dari satu pemutar: chip nama pemutar di kanan judul, klik untuk berpindah
+    let mut title_r = r;
+    if m.sources > 1 && !m.source.is_empty() {
+        let label = format!("{} \u{203A}", m.source);
+        title_r = r - g.width(&label, &g.f.csmall) - 24.0;
+        crate::pages::chip(g, [title_r + 8.0, top + 21.0, r, top + 39.0], &label, crate::render::CHIP, buttons, Action::Media(|| Msg::Source));
+    }
     if m.session && !m.title.is_empty() {
-        g.text(&m.title, &g.f.bold, [tx, top + 20.0, r, top + 40.0], WHITE);
+        g.text(&m.title, &g.f.bold, [tx, top + 20.0, title_r, top + 40.0], WHITE);
         g.text(&m.artist, &g.f.small, [tx, top + 38.0, r, top + 54.0], GRAY);
     } else {
         g.text("Tidak ada media", &g.f.bold, [tx, top + 20.0, r, top + 40.0], WHITE);

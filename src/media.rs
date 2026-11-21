@@ -40,6 +40,8 @@ pub enum Msg {
     /// lompat ke posisi 0..1 dari durasi
     Seek(f32),
     Mute,
+    /// pindah ke pemutar berikutnya (saat lebih dari satu app memutar media)
+    Source,
     Net,
     Lyrics(String, Option<Arc<Vec<Line>>>),
     AudioDevice,
@@ -66,6 +68,18 @@ pub struct Media {
     pub dur_ms: i64,
     pub lyrics: Option<Arc<Vec<Line>>>,
     pub art: Option<Arc<Art>>,
+    /// jumlah pemutar yang sedang terdaftar di Windows, dan nama pemutar yang ditampilkan
+    pub sources: usize,
+    pub source: String,
+}
+
+/// Nama pemutar dari AppUserModelId-nya: "Spotify.exe" -> "Spotify", "Paket_abc!Spotify" -> "Spotify".
+fn source_name(id: &str) -> String {
+    let name = id.rsplit('!').next().unwrap_or(id);
+    let name = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let name = if name.to_ascii_lowercase().ends_with(".exe") { &name[..name.len() - 4] } else { name };
+    let mut chars = name.chars();
+    chars.next().map_or(String::new(), |c| c.to_uppercase().chain(chars).collect())
 }
 
 impl Media {
@@ -132,6 +146,7 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
     let mut volume = volume::Watch::new(hwnd, &tx).ok();
     let manager = Manager::RequestAsync()?.join()?;
     manager.CurrentSessionChanged(&ping!(tx, Msg::Props))?;
+    manager.SessionsChanged(&ping!(tx, Msg::Props))?;
     let net_tx = tx.clone();
     let _ = windows::Networking::Connectivity::NetworkInformation::NetworkStatusChanged(&windows::Networking::Connectivity::NetworkStatusChangedEventHandler::new(move |_| {
         let _ = net_tx.send(Msg::Net);
@@ -139,6 +154,9 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
     }));
     let _ = tx.send(Msg::Net);
     let mut session: Option<Session> = None;
+    // pemutar pilihan user; None = ikut sesi yang dianggap aktif oleh Windows
+    let mut chosen: Option<windows::core::HSTRING> = None;
+    let id = |s: &Option<Session>| s.as_ref().and_then(|s| s.SourceAppUserModelId().ok());
     let mut cache = Cache::new();
     // (judul + artis, cover): cover hanya dibaca ulang saat properti media berubah
     let mut art: (String, Option<Arc<Art>>) = Default::default();
@@ -161,6 +179,11 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
                     Ok(())
                 });
             }
+            Msg::Source => {
+                let ids: Vec<_> = manager.GetSessions().into_iter().flatten().filter_map(|s| s.SourceAppUserModelId().ok()).collect();
+                let next = ids.iter().position(|i| Some(i) == id(&session).as_ref()).map_or(0, |i| i + 1);
+                chosen = ids.get(next % ids.len().max(1)).cloned();
+            }
             Msg::Mute => {
                 if let Some(v) = &volume {
                     v.toggle_mute();
@@ -182,8 +205,10 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
                 continue;
             }
         }
-        let current = manager.GetCurrentSession().ok();
-        let id = |s: &Option<Session>| s.as_ref().and_then(|s| s.SourceAppUserModelId().ok());
+        let all: Vec<Session> = manager.GetSessions().into_iter().flatten().collect();
+        // pilihan user dipakai selama pemutarnya masih ada
+        let picked = all.iter().find(|s| chosen.is_some() && s.SourceAppUserModelId().ok() == chosen).cloned();
+        let current = picked.or_else(|| manager.GetCurrentSession().ok());
         if id(&current) != id(&session) {
             session = current;
             if let Some(s) = &session {
@@ -192,7 +217,8 @@ fn run(hwnd: isize, tx: Sender<Msg>, rx: mpsc::Receiver<Msg>) -> Result<()> {
                 let _ = s.TimelinePropertiesChanged(&ping!(tx, Msg::Refresh));
             }
         }
-        let media = session.as_ref().and_then(|s| read(s, &mut cache, &mut art, reload_art, &tx).ok()).unwrap_or_default();
+        let mut media = session.as_ref().and_then(|s| read(s, &mut cache, &mut art, reload_art, &tx).ok()).unwrap_or_default();
+        (media.sources, media.source) = (all.len(), id(&session).map_or(String::new(), |i| source_name(&i.to_string())));
         *MEDIA.lock().unwrap() = Some(media);
         let _ = unsafe { PostMessageW(Some(HWND(hwnd as _)), WM_APP_MEDIA, WPARAM(0), LPARAM(0)) };
     }
@@ -241,5 +267,16 @@ fn read(s: &Session, cache: &mut Cache, art: &mut (String, Option<Arc<Art>>), re
     } else {
         None
     };
-    Ok(Media { session: true, title, artist, playing, pos_ms, at: Some(Instant::now()), dur_ms, lyrics, art: art.1.clone() })
+    Ok(Media { session: true, title, artist, playing, pos_ms, at: Some(Instant::now()), dur_ms, lyrics, art: art.1.clone(), ..Default::default() })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn source_names_are_readable() {
+        assert_eq!(super::source_name("Spotify.exe"), "Spotify");
+        assert_eq!(super::source_name("SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"), "Spotify");
+        assert_eq!(super::source_name("chrome.exe"), "Chrome");
+        assert_eq!(super::source_name(""), "");
+    }
 }

@@ -131,6 +131,8 @@ pub struct Alert {
     text: String,
     /// judul tugas, kalau peringatan ini bisa ditunda
     task: Option<String>,
+    /// AppUserModelId app yang dibuka saat popup diklik (notifikasi)
+    open: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -192,7 +194,7 @@ pub struct App {
     cities: (usize, usize),
     sound: bool,
     files: Vec<String>,
-    clips: Vec<String>,
+    clips: Vec<shelf::Clip>,
     /// file sedang diseret di atas notch
     dragging: bool,
     /// posisi tombol mouse ditekan di atas file Shelf, untuk mulai menyeret keluar
@@ -313,10 +315,13 @@ impl App {
     /// Hitung ulang bentuk notch dari keadaan sekarang, lalu gambar.
     fn update(&mut self) {
         let playing = self.media.session && self.media.playing;
+        // popup yang bisa diklik (pengingat, notifikasi) tidak digantikan halaman saat kursor datang,
+        // supaya sempat diklik
+        let clickable = self.hud == Some(Hud::Alert) || (self.hud == Some(Hud::Info) && self.alert.as_ref().is_some_and(|a| a.open.is_some()));
         let view = state::view(Inputs {
             hidden: self.user_hidden || self.fullscreen,
             // kotak teks yang terbuka menahan notch tetap terbuka
-            hover: self.hover || input::is_open() || self.dragging,
+            hover: (self.hover && !clickable) || input::is_open() || self.dragging,
             ringing: self.ringing(),
             hud: self.hud.is_some(),
             // pill melebar hanya kalau ada lirik untuk ditampilkan; tanpa lirik cukup ikon audio yang bergerak
@@ -654,8 +659,11 @@ impl App {
         if self.ringing() {
             self.timer.toggle(Instant::now());
         } else if self.view == View::Hud && matches!(self.hud, Some(Hud::Alert | Hud::Info)) && !matches!(hit, Some(Action::Snooze)) {
-            // klik pada peringatan berarti sudah dibaca
-            (self.alert, self.hud) = (None, None);
+            // klik pada peringatan berarti sudah dibaca; notifikasi sekaligus membuka app pengirimnya
+            if let Some(app) = self.alert.take().and_then(|a| a.open) {
+                shelf::open(&format!("shell:AppsFolder\\{app}"));
+            }
+            self.hud = None;
         } else if let Some(Action::Seek { x0, x1 }) = hit {
             let _ = self.tx.send(Msg::Seek((x - x0) / (x1 - x0)));
         } else if let Some(action) = hit {
@@ -1093,14 +1101,15 @@ fn sections() -> Vec<Section> {
             items: vec![
                 Item::Check("Notify.On", "Tampilkan notifikasi app di notch", true),
                 Item::Check("Notify.Preview", "Tampilkan isi pesan", false),
-                Item::Note("Kalau isi pesan dimatikan, notch hanya menampilkan nama app. Notifikasi dibaca di komputer ini dan tidak dikirim ke mana pun."),
+                Item::Text("Notify.Mute", "Jangan tampilkan notifikasi dari (nama app, pisahkan dengan koma)", false),
+                Item::Note("Klik notifikasi di notch untuk membuka app pengirimnya. Kalau isi pesan dimatikan, notch hanya menampilkan nama app. Notifikasi dibaca di komputer ini dan tidak dikirim ke mana pun."),
             ],
         },
         Section {
             name: "Shelf",
             items: vec![
                 Item::Check("Shelf.Clear", "Kosongkan Shelf setiap Ponian dibuka", true),
-                Item::Check("Clip.On", "Simpan riwayat clipboard (teks yang Anda salin)", true),
+                Item::Check("Clip.On", "Simpan riwayat clipboard (teks, gambar, dan file yang Anda salin)", true),
                 Item::Choice("Clip.Limit", "Jumlah riwayat clipboard", || opts(&["5", "10", "20", "50"]), 1),
                 Item::Check("Clip.Keep", "Ingat riwayat clipboard setelah Ponian ditutup", false),
                 Item::Note("Teks dari password manager yang menandai isinya rahasia tidak ikut disimpan."),

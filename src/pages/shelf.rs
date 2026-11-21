@@ -50,14 +50,17 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>)
         more(g, app.files.len(), [l, b - 4.0, r, b + 10.0]);
     } else {
         if app.clips.is_empty() {
-            return empty("\u{E8C8}", "Salin teks apa saja", "Nanti menunggu di sini, siap ditempel lagi", DIM);
+            return empty("\u{E8C8}", "Salin teks, gambar, atau file", "Nanti menunggu di sini, siap ditempel lagi", DIM);
         }
         for (row, clip) in app.clips.iter().take(ROWS).enumerate() {
             let y = zone[1] + row as f32 * 26.0;
             let item = [l, y, r, y + 23.0];
-            let line: String = clip.split_whitespace().collect::<Vec<_>>().join(" ");
+            let (icon, line) = clip.label();
             g.rrect(item, 9.0, CARD);
-            g.text(&line, &g.f.text, [l + 10.0, y, r - 10.0, y + 23.0], WHITE);
+            // teks tampil polos; file dan gambar diberi ikon supaya terbedakan
+            let x = if icon.is_empty() { l + 10.0 } else { l + 28.0 };
+            g.text(icon, &g.f.icon_small, [l + 6.0, y, l + 24.0, y + 23.0], GRAY);
+            g.text(&line, &g.f.text, [x, y, r - 10.0, y + 23.0], WHITE);
             buttons.push((item, Action::ClipCopy(row)));
         }
         more(g, app.clips.len(), [l, b - 4.0, r, b + 10.0]);

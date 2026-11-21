@@ -44,11 +44,19 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
         let task = &tasks[i];
         let y = row_y(row);
         g.ring(cl + 7.0, y + 12.0, 6.0, 1.5, if task.done { 1.0 } else { 0.0 }, GREEN, if task.done { GREEN } else { GRAY });
-        let time = task.time.map(clock::hhmm).unwrap_or_default();
+        // tugas untuk hari lain menampilkan tanggalnya, tugas hari ini menampilkan jamnya
+        let time = if task.day != today {
+            let (_, m, d) = clock::civil_from_days(task.day);
+            format!("{d}/{m}")
+        } else {
+            task.time.map(clock::hhmm).unwrap_or_default()
+        };
         let tw = if time.is_empty() { 0.0 } else { 34.0 };
         g.text(&task.title, &g.f.small, [cl + 20.0, y, cr - 20.0 - tw, y + 24.0], if task.done { DIM } else { WHITE });
         g.text(&time, &g.f.rsmall, [cr - 20.0 - tw, y, cr - 20.0, y + 24.0], GRAY);
-        buttons.push(([card[0], y, cr - 20.0, y + 24.0], Action::TodoToggle(i)));
+        // lingkaran menandai selesai; judul membuka kotak edit
+        buttons.push(([card[0], y, cl + 18.0, y + 24.0], Action::TodoToggle(i)));
+        buttons.push(([cl + 18.0, y, cr - 20.0, y + 24.0], Action::TodoEdit(i)));
         let del = [cr - 18.0, y, cr + 2.0, y + 24.0];
         g.text("\u{E711}", &g.f.icon_small, del, DIM);
         buttons.push((del, Action::TodoDelete(i)));

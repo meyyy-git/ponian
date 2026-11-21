@@ -147,6 +147,12 @@ pub enum Action {
     TimerToggle,
     TimerReset,
     TimerSet(u64),
+    TimerCustom,
+    TimerMode(bool),
+    StopwatchToggle,
+    StopwatchReset,
+    TodoEdit(usize),
+    CalAdd,
     /// geser kalender sekian bulan
     CalMove(i32),
     CalToday,
@@ -170,6 +176,10 @@ pub struct App {
     media: Media,
     last_track: String,
     timer: Timer,
+    stopwatch: timer::Stopwatch,
+    stopwatch_mode: bool,
+    /// indeks tugas atau pintasan yang sedang diedit lewat kotak teks
+    editing: usize,
     tasks: Vec<todo::Task>,
     today: i64,
     /// menit sejak tengah malam untuk tiap waktu salat hari ini
@@ -251,9 +261,15 @@ impl App {
         self.timer.run == Run::Ringing
     }
 
-    /// Sisa waktu timer untuk pill kecil, selama sedang berjalan atau dijeda.
+    /// Waktu untuk pill kecil: sisa timer, atau waktu stopwatch yang sedang berjalan.
     fn timer_remaining(&self) -> Option<String> {
-        matches!(self.timer.run, Run::Running(_) | Run::Paused(_)).then(|| state::mmss(self.timer.remaining(Instant::now())))
+        let now = Instant::now();
+        if matches!(self.timer.run, Run::Running(_) | Run::Paused(_)) {
+            Some(state::mmss(self.timer.remaining(now)))
+        } else {
+            // stopwatch yang berjalan juga tampil di pill
+            self.stopwatch.running().then(|| state::mmss(self.stopwatch.elapsed(now)))
+        }
     }
 
     /// Posisi putar untuk lirik, sudah dimajukan sesuai setting "Majukan lirik".
@@ -317,7 +333,7 @@ impl App {
                 self.anim_start = Some(Instant::now());
             }
             // selama musik berjalan: ikon audio, baris lirik, dan batang progres ikut bergerak
-            let need_tick = self.timer.running() || self.ringing() || playing;
+            let need_tick = self.timer.running() || self.stopwatch.running() || self.ringing() || playing;
             if need_tick != self.ticking {
                 self.ticking = need_tick;
                 if need_tick {
@@ -1216,6 +1232,9 @@ fn main() -> Result<()> {
             media: Media::default(),
             last_track: String::new(),
             timer: Timer::new(settings::dword("Timer.Minutes", 25) as u64),
+            stopwatch: timer::Stopwatch::default(),
+            stopwatch_mode: false,
+            editing: 0,
             tasks: Vec::new(),
             today: 0,
             prayer: None,

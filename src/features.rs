@@ -15,6 +15,10 @@ use windows::Win32::{
 };
 
 pub const INPUT_TODO: usize = 1;
+pub const INPUT_TODO_EDIT: usize = 2;
+pub const INPUT_TIMER: usize = 3;
+pub const INPUT_CAL: usize = 4;
+pub const INPUT_APP_NAME: usize = 5;
 pub const SNOOZE: [u32; 3] = [5, 10, 15];
 
 impl App {
@@ -292,7 +296,18 @@ impl App {
                 self.timer.set(minutes);
                 settings::set_dword("Timer.Minutes", minutes as u32);
             }
-            Action::TodoAdd => self.open_todo_input(),
+            Action::TodoAdd => self.open_input(INPUT_TODO, "", "Tugas baru, mis. Rapat besok 14:30"),
+            Action::TodoEdit(i) => {
+                if let Some(text) = self.tasks.get(i).map(|t| todo::to_input(t, now.day)) {
+                    self.editing = i;
+                    self.open_input(INPUT_TODO_EDIT, &text, "Ubah tugas");
+                }
+            }
+            Action::CalAdd => self.open_input(INPUT_CAL, "", "Acara di hari terpilih, mis. Rapat 14:30"),
+            Action::TimerCustom => self.open_input(INPUT_TIMER, "", "Durasi dalam menit, atau jam:menit (mis. 90 atau 1:30)"),
+            Action::TimerMode(stopwatch) => self.stopwatch_mode = stopwatch,
+            Action::StopwatchToggle => self.stopwatch.toggle(Instant::now()),
+            Action::StopwatchReset => self.stopwatch.reset(),
             Action::TodoToggle(i) => {
                 if let Some(t) = self.tasks.get_mut(i) {
                     t.done = !t.done;
@@ -348,25 +363,51 @@ impl App {
         }
     }
 
-    fn open_todo_input(&mut self) {
+}
+
+impl App {
+    /// Buka kotak teks di tengah panel. `id` menentukan untuk apa teksnya nanti dipakai.
+    pub fn open_input(&mut self, id: usize, initial: &str, hint: &str) {
         let mut wr = RECT::default();
         let _ = unsafe { GetWindowRect(self.hwnd, &mut wr) };
         let cx = crate::WIN.0 / 2.0;
         let px = |x: f32| (x * self.scale) as i32;
         let rect = RECT { left: wr.left + px(cx - 170.0), top: wr.top + px(74.0), right: wr.left + px(cx + 170.0), bottom: wr.top + px(108.0) };
-        input::open(self.hwnd, INPUT_TODO, rect, self.scale, "", "Tugas baru, misalnya: Rapat 14:30");
+        input::open(self.hwnd, id, rect, self.scale, initial, hint);
     }
 
     pub fn on_input(&mut self, id: usize, result: isize) {
         let Some(text) = input::take_text() else { return };
-        if result != input::SUBMIT || id != INPUT_TODO {
+        if result != input::SUBMIT {
             return;
         }
-        let Some((title, time)) = todo::parse(&text) else { return };
         let now = clock::now();
-        // jam yang sudah lewat hari ini tidak langsung memicu pengingat
-        let reminded = time.is_some_and(|m| m < now.min);
-        self.tasks.push(Task { title, time, done: false, reminded, day: now.day });
-        self.save_tasks();
+        match id {
+            INPUT_TIMER => {
+                if let Some(minutes) = crate::timer::parse_minutes(&text) {
+                    self.timer.set(minutes);
+                    settings::set_dword("Timer.Minutes", minutes as u32);
+                }
+            }
+            INPUT_APP_NAME => {
+                if let Some(s) = self.apps.get_mut(self.editing).filter(|_| !text.trim().is_empty()) {
+                    s.name = text.trim().to_string();
+                    crate::apps::save(&self.apps);
+                }
+            }
+            // tugas baru, tugas yang diedit, atau acara pada hari yang dipilih di Kalender
+            _ => {
+                let default_day = if id == INPUT_CAL { self.cal_day.unwrap_or(now.day) } else { now.day };
+                let Some((title, time, day)) = todo::parse(&text, now.day) else { return };
+                let day = day.unwrap_or(default_day);
+                // jam yang sudah lewat hari ini tidak langsung memicu pengingat
+                let reminded = day == now.day && time.is_some_and(|m| m < now.min);
+                match self.tasks.get_mut(self.editing).filter(|_| id == INPUT_TODO_EDIT) {
+                    Some(t) => (t.title, t.time, t.day, t.reminded) = (title, time, day, reminded),
+                    None => self.tasks.push(Task { title, time, done: false, reminded, day }),
+                }
+                self.save_tasks();
+            }
+        }
     }
 }

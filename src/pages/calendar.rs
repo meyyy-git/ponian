@@ -33,20 +33,19 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     g.text(&format!("{} {y}", MONTHS[m as usize - 1]), &g.f.bold, [l, t - 2.0, l + 122.0, t + 18.0], WHITE);
     chip(g, [l, t + 22.0, l + 26.0, t + 44.0], "\u{2039}", CHIP, buttons, Action::CalMove(-1));
     chip(g, [l + 30.0, t + 22.0, l + 56.0, t + 44.0], "\u{203A}", CHIP, buttons, Action::CalMove(1));
-    chip(g, [l + 60.0, t + 22.0, l + 118.0, t + 44.0], "Hari ini", CHIP, buttons, Action::CalToday);
+    chip(g, [l + 60.0, t + 22.0, l + 96.0, t + 44.0], "Kini", CHIP, buttons, Action::CalToday);
+    chip(g, [l + 100.0, t + 22.0, l + 122.0, t + 44.0], "+", CHIP, buttons, Action::CalAdd);
     let (sy, sm, sd) = clock::civil_from_days(selected);
     g.text(&state::date_id(clock::weekday(selected) as u16, sd as u16, sm as u16, sy as u16), &g.f.small, [l, t + 50.0, l + 120.0, t + 66.0], GRAY);
-    let list = calendar::on(&events, selected);
+    // acara kalender dan tugas yang dijadwalkan pada hari itu
+    let mut list: Vec<String> = calendar::on(&events, selected).iter().map(|e| e.min.map_or(e.title.clone(), |min| format!("{} {}", clock::hhmm(min), e.title))).collect();
+    list.extend(app.tasks.iter().filter(|t| t.day == selected && !t.done).map(|t| t.time.map_or(t.title.clone(), |min| format!("{} {}", clock::hhmm(min), t.title))));
     if list.is_empty() {
         g.text("Tidak ada acara", &g.f.small, [l, t + 66.0, l + 120.0, t + 82.0], GRAY);
     }
-    for (row, e) in list.iter().take(2).enumerate() {
+    for (row, label) in list.iter().take(2).enumerate() {
         let y = t + 66.0 + row as f32 * 17.0;
-        let label = match e.min {
-            Some(min) => format!("{} {}", clock::hhmm(min), e.title),
-            None => e.title.clone(),
-        };
-        g.text(&label, &g.f.small, [l, y, l + 120.0, y + 17.0], WHITE);
+        g.text(label, &g.f.small, [l, y, l + 120.0, y + 17.0], WHITE);
     }
 
     // kanan: kisi bulan
@@ -62,7 +61,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
         let (x, y) = (gx + (cell_no % 7) as f32 * cw, t + 12.0 + (cell_no / 7) as f32 * 15.0);
         let cell = [x, y, x + cw, y + 15.0];
         let pill = [x + cw / 2.0 - 11.0, y + 0.5, x + cw / 2.0 + 11.0, y + 14.5];
-        let has_event = !calendar::on(&events, day).is_empty();
+        let has_event = !calendar::on(&events, day).is_empty() || app.tasks.iter().any(|t| t.day == day && !t.done);
         let color = if day == today {
             g.rrect(pill, 7.0, ACCENT);
             WHITE

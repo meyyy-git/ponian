@@ -1,5 +1,4 @@
 //! Halaman-halaman di notch yang terbuka. Satu modul per halaman, dipilih lewat enum.
-mod ask;
 mod music;
 mod pomodoro;
 mod prayer;
@@ -17,7 +16,6 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Page {
     Music,
-    Ask,
     Today,
     Widgets,
     Shelf,
@@ -28,13 +26,12 @@ pub enum Page {
 }
 
 // shortcut: urutan halaman tetap mengikuti daftar ini; user hanya bisa menyalakan atau mematikan.
-pub const ALL: [Page; 9] = [Page::Music, Page::Ask, Page::Today, Page::Widgets, Page::Shelf, Page::Pomodoro, Page::Todo, Page::Water, Page::Prayer];
+pub const ALL: [Page; 8] = [Page::Music, Page::Today, Page::Widgets, Page::Shelf, Page::Pomodoro, Page::Todo, Page::Water, Page::Prayer];
 
 impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Page::Music => "Musik",
-            Page::Ask => "Tanya",
             Page::Today => "Hari ini",
             Page::Widgets => "Widget",
             Page::Shelf => "Shelf",
@@ -49,7 +46,6 @@ impl Page {
     pub fn key(self) -> &'static str {
         match self {
             Page::Music => "Page.Music",
-            Page::Ask => "Page.Ask",
             Page::Today => "Page.Today",
             Page::Widgets => "Page.Widgets",
             Page::Shelf => "Page.Shelf",
@@ -63,7 +59,6 @@ impl Page {
     pub fn draw(self, app: &App, g: &Gfx, area: R, buttons: &mut Vec<(R, Action)>) {
         match self {
             Page::Music => music::draw(app, g, area, buttons),
-            Page::Ask => ask::draw(app, g, area, buttons),
             Page::Today => today::draw(app, g, area),
             Page::Widgets => widgets::draw(app, g, area),
             Page::Shelf => shelf::draw(app, g, area, buttons),

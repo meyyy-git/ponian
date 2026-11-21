@@ -1,7 +1,6 @@
 #![windows_subsystem = "windows"]
 //! Ponian: notch untuk Windows.
 
-mod ai;
 mod astro;
 mod calendar;
 mod clock;
@@ -67,7 +66,6 @@ pub const WM_APP_NOTIFY: u32 = WM_APP + 8;
 pub const WM_APP_NET: u32 = WM_APP + 9;
 pub const WM_APP_AUDIODEV: u32 = WM_APP + 11;
 pub const WM_APP_ONLINE: u32 = WM_APP + 12;
-pub const WM_APP_AI: u32 = WM_APP + 13;
 pub const WM_APP_OCR: u32 = WM_APP + 14;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const PBT_POWERSETTINGCHANGE: u32 = 0x8013;
@@ -76,11 +74,9 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_MOUSEHWHEEL: u32 = 0x020E;
 
 /// Ukuran window dalam DIP. Notch digambar di dalamnya, sisanya transparan dan tembus klik.
-const WIN: (f32, f32) = (440.0, 320.0);
+const WIN: (f32, f32) = (440.0, 190.0);
 const IDLE: (f32, f32) = (152.0, 30.0);
 const EXPANDED: (f32, f32) = (405.0, 172.0);
-/// Halaman Tanya lebih tinggi supaya jawaban AI muat.
-const ASK_HEIGHT: f32 = 300.0;
 /// Notch sedikit membesar begitu kursor masuk, sebelum jeda hover selesai.
 const PEEK: (f32, f32) = (8.0, 3.0);
 const EAR: f32 = 6.0;
@@ -132,11 +128,6 @@ pub enum Action {
     ShelfOpen(usize),
     ShelfRemove(usize),
     ClipCopy(usize),
-    /// buka kotak Tanya; true = mode terjemah
-    AskOpen(bool),
-    AskKey,
-    AskCopy,
-    AskClear,
 }
 
 pub struct App {
@@ -174,10 +165,6 @@ pub struct App {
     net: Option<String>,
     notices: Vec<(notify::Notice, Instant)>,
     notify_preview: bool,
-    ask: features::AskState,
-    has_key: bool,
-    /// notch tetap terbuka sampai waktu ini walau kursor tidak di atasnya (setelah bertanya lewat shortcut)
-    pin: Option<Instant>,
     hud: Option<Hud>,
     plugged: Option<bool>,
     inside: bool,
@@ -251,7 +238,6 @@ impl App {
             View::Hud if matches!(self.hud, Some(Hud::Alert | Hud::Info)) => (380.0, 38.0),
             View::Hud if matches!(self.hud, Some(Hud::Caps(_) | Hud::Lang(_))) => (220.0, 34.0),
             View::Hud => (300.0, 34.0),
-            View::Expanded if self.current_page() == Page::Ask => (EXPANDED.0, ASK_HEIGHT),
             View::Expanded => EXPANDED,
         }
     }
@@ -262,7 +248,7 @@ impl App {
         let view = state::view(Inputs {
             hidden: self.user_hidden || self.fullscreen,
             // kotak teks yang terbuka menahan notch tetap terbuka
-            hover: self.hover || input::is_open() || self.dragging || self.pin.is_some_and(|t| Instant::now() < t),
+            hover: self.hover || input::is_open() || self.dragging,
             ringing: self.ringing(),
             hud: self.hud.is_some(),
             playing,
@@ -472,7 +458,7 @@ impl App {
     fn hotkeys(&mut self) {
         let failed = register_hotkeys(self.hwnd);
         if !failed.is_empty() {
-            self.info("\u{E765}", format!("{} dipakai app lain \u{B7} ganti di Pengaturan", failed.join(" & ")), 6000);
+            self.info("\u{E765}", format!("{} dipakai app lain \u{B7} matikan di Pengaturan", failed.join(" & ")), 6000);
         }
     }
 
@@ -511,10 +497,6 @@ impl App {
                     self.update();
                 }
                 WM_MOUSELEAVE => {
-                    // begitu user sudah melihat dan menggeser kursor keluar, notch boleh menutup
-                    if self.hover {
-                        self.pin = None;
-                    }
                     (self.inside, self.hover) = (false, false);
                     let _ = KillTimer(Some(self.hwnd), T_HOVER);
                     self.update();
@@ -556,17 +538,8 @@ impl App {
                 WM_APP_NET => self.on_net(),
                 WM_APP_AUDIODEV => self.on_audio_device(),
                 WM_APP_ONLINE if self.view == View::Expanded => self.draw(),
-                WM_APP_AI => {
-                    self.on_ai();
-                    self.pin = Some(Instant::now() + std::time::Duration::from_secs(12));
-                    self.update();
-                }
                 WM_APP_OCR => self.on_ocr(),
-                WM_HOTKEY => match wp.0 {
-                    HOTKEY_ASK => self.open_ask_input(features::INPUT_ASK),
-                    HOTKEY_OCR => ocr::start(self.hwnd),
-                    _ => {}
-                },
+                WM_HOTKEY if wp.0 == HOTKEY_OCR => ocr::start(self.hwnd),
                 WM_POWERBROADCAST if wp.0 as u32 == PBT_POWERSETTINGCHANGE => {
                     // pemberitahuan pertama datang saat didaftarkan, bukan karena user mengubah kecerahan
                     if let Some(pct) = system::brightness(lp) {
@@ -598,10 +571,6 @@ impl App {
                         let new_minute = minute != self.minute;
                         self.minute = minute;
                         self.check_layout();
-                        if self.pin.is_some_and(|t| Instant::now() >= t) {
-                            self.pin = None;
-                            self.update();
-                        }
                         if new_minute {
                             self.minute_jobs();
                         }
@@ -650,10 +619,6 @@ impl App {
                 }
                 input::WM_APP_INPUT => {
                     self.on_input(wp.0, lp.0);
-                    // pertanyaan dari shortcut: biarkan notch terbuka supaya jawabannya terlihat
-                    if wp.0 != features::INPUT_TODO && lp.0 != input::CANCEL {
-                        self.pin = Some(Instant::now() + std::time::Duration::from_secs(if self.ask.thinking { 30 } else { 10 }));
-                    }
                     // kursor mungkin sudah di luar notch saat kotak teks ditutup
                     let mut p = POINT::default();
                     let mut wr = RECT::default();
@@ -702,29 +667,15 @@ fn wave(g: &Gfx, cx: f32, cy: f32) {
     }
 }
 
-const HOTKEY_ASK: usize = 1;
 const HOTKEY_OCR: usize = 2;
 
-const ASK_KEYS: [&str; 4] = ["Ctrl+Alt+Space", "Ctrl+Alt+A", "Ctrl+Shift+Space", "Alt+Shift+Space"];
-
-/// Daftarkan shortcut Tanya (pilihan user) dan Ctrl+Alt+T untuk menyalin teks dari layar.
+/// Daftarkan Ctrl+Alt+T untuk menyalin teks dari layar.
 /// Mengembalikan nama shortcut yang gagal karena sudah dipakai app lain.
 fn register_hotkeys(hwnd: HWND) -> Vec<&'static str> {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey, UnregisterHotKey, VK_SPACE};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey};
     let mut failed = Vec::new();
     unsafe {
-        let _ = UnregisterHotKey(Some(hwnd), HOTKEY_ASK as i32);
         let _ = UnregisterHotKey(Some(hwnd), HOTKEY_OCR as i32);
-        let pick = (settings::dword("Ask.Key", 0) as usize).min(ASK_KEYS.len() - 1);
-        let (mods, vk) = [
-            (MOD_CONTROL | MOD_ALT, VK_SPACE.0 as u32),
-            (MOD_CONTROL | MOD_ALT, 'A' as u32),
-            (MOD_CONTROL | MOD_SHIFT, VK_SPACE.0 as u32),
-            (MOD_ALT | MOD_SHIFT, VK_SPACE.0 as u32),
-        ][pick];
-        if settings::flag("Ask.On", true) && RegisterHotKey(Some(hwnd), HOTKEY_ASK as i32, mods | MOD_NOREPEAT, vk).is_err() {
-            failed.push(ASK_KEYS[pick]);
-        }
         if settings::flag("Ocr.On", true) && RegisterHotKey(Some(hwnd), HOTKEY_OCR as i32, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'T' as u32).is_err() {
             failed.push("Ctrl+Alt+T");
         }
@@ -854,12 +805,8 @@ fn sections() -> Vec<Section> {
             ],
         },
         Section {
-            name: "AI & OCR",
+            name: "Salin teks layar",
             items: vec![
-                Item::Check("Ask.On", "Shortcut untuk membuka Tanya dari mana saja", true),
-                Item::Choice("Ask.Key", "Shortcut Tanya", || opts(&ASK_KEYS), 0),
-                Item::Text("Gemini", "API key Gemini (gratis di aistudio.google.com)", true),
-                Item::Note("Pertanyaan, teks terjemahan, dan teks dari layar yang Anda tanyakan dikirim ke Google Gemini. Dengan key gratis, Google bisa memakainya untuk meningkatkan layanan. Hitung cepat dan kurs dihitung di komputer ini."),
                 Item::Check("Ocr.On", "Salin teks dari layar (OCR) dengan Ctrl+Alt+T: pilih area, teksnya disalin", true),
                 Item::Note("OCR memakai mesin bawaan Windows dan berjalan offline."),
             ],
@@ -1013,9 +960,6 @@ fn main() -> Result<()> {
             net: None,
             notices: Vec::new(),
             notify_preview: false,
-            ask: features::AskState::default(),
-            has_key: false,
-            pin: None,
             hud: None,
             plugged: power::status().map(|s| s.0),
             inside: false,

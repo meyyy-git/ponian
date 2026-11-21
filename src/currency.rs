@@ -29,21 +29,6 @@ pub fn convert(rates: &Rates, amount: f64, from: &str, to: &str) -> Option<f64> 
     Some(amount / rates.get(from)? * rates.get(to)?)
 }
 
-/// "100 usd to idr", "100 usd ke idr", "100usd idr", "50 eur =" -> (100, "USD", "IDR"). Tujuan kosong = mata uang utama.
-pub fn parse_query(s: &str) -> Option<(f64, String, Option<String>)> {
-    let s = s.trim().trim_end_matches('=').trim().to_lowercase();
-    let split = s.find(|c: char| c.is_ascii_alphabetic())?;
-    let amount: f64 = s[..split].trim().replace('.', "").replace(',', ".").parse().ok()?;
-    let words: Vec<&str> = s[split..].split_whitespace().filter(|w| !["to", "ke", "in", "dalam", "jadi"].contains(w)).collect();
-    let code = |w: &str| (w.len() == 3 && w.chars().all(|c| c.is_ascii_alphabetic())).then(|| w.to_uppercase());
-    let from = code(words.first()?)?;
-    let to = match words.get(1) {
-        Some(w) => Some(code(w)?),
-        None => None,
-    };
-    (words.len() <= 2).then_some((amount, from, to))
-}
-
 /// 16205.5 -> "16.205,50"; angka besar tanpa desimal.
 pub fn format(v: f64, code: &str) -> String {
     let decimals = if v >= 1000.0 || code == "IDR" || code == "JPY" { 0 } else { 2 };
@@ -69,15 +54,6 @@ pub fn format(v: f64, code: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_queries() {
-        assert_eq!(parse_query("100 usd to idr"), Some((100.0, "USD".into(), Some("IDR".into()))));
-        assert_eq!(parse_query("1.500 idr ke usd ="), Some((1500.0, "IDR".into(), Some("USD".into()))));
-        assert_eq!(parse_query("2,5 eur"), Some((2.5, "EUR".into(), None)));
-        assert_eq!(parse_query("berapa kurs dolar"), None);
-        assert_eq!(parse_query("100 dollar to rupiah"), None);
-    }
 
     #[test]
     fn converts_and_formats() {

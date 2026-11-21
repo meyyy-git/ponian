@@ -122,14 +122,31 @@ pub fn enabled() -> Vec<Page> {
 /// Tombol kapsul kecil berlabel.
 pub fn chip(g: &Gfx, r: R, label: &str, color: u32, buttons: &mut Vec<(R, Action)>, action: Action) {
     g.rrect(r, (r[3] - r[1]) / 2.0, color);
-    g.text(label, if color == CHIP { &g.f.csmall } else { &g.f.cbold }, r, WHITE);
+    g.text(label, if color == CHIP { &g.f.csmall } else { &g.f.cbold }, lifted(r), WHITE);
+    buttons.push((r, action));
+}
+
+/// Kotak teks dinaikkan 1 DIP: huruf Segoe UI duduk sedikit di bawah tengah kotak barisnya, jadi tanpa
+/// ini label di dalam kapsul terlihat turun.
+pub fn lifted([l, t, r, b]: R) -> R {
+    [l, t - 1.0, r, b - 1.0]
+}
+
+/// Tombol kapsul berisi satu ikon dari font ikon Windows (panah, tambah), yang tepat di tengah.
+pub fn icon_chip(g: &Gfx, r: R, icon: &str, buttons: &mut Vec<(R, Action)>, action: Action) {
+    g.rrect(r, (r[3] - r[1]) / 2.0, CHIP);
+    g.text(icon, &g.f.icon_small, r, WHITE);
     buttons.push((r, action));
 }
 
 /// Kartu berlatar abu-abu gelap dengan label kecil di atas, nilai besar, dan keterangan.
-pub fn card(g: &Gfx, [l, t, r, b]: R, label: &str, value: &str, sub: &str) {
+/// `icon` digambar berwarna `tint` di depan label (glyph font ikon, atau emoji untuk cuaca).
+pub fn card(g: &Gfx, [l, t, r, b]: R, icon: &str, tint: u32, label: &str, value: &str, sub: &str) {
     g.rrect([l, t, r, b], 12.0, 0x161616);
-    g.text(label, &g.f.small, [l + 12.0, t + 4.0, r - 10.0, t + 21.0], GRAY);
+    // glyph font ikon ada di area pribadi Unicode; selain itu (emoji) digambar dengan font teks
+    let glyph = icon.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c));
+    g.text(icon, if glyph { &g.f.icon_small } else { &g.f.csmall }, [l + 8.0, t + 4.0, l + 26.0, t + 21.0], tint);
+    g.text(label, &g.f.small, [l + 28.0, t + 4.0, r - 8.0, t + 21.0], GRAY);
     g.text(value, &g.f.bold, [l + 12.0, t + 20.0, r - 10.0, t + 41.0], WHITE);
     g.text(sub, &g.f.small, [l + 12.0, t + 39.0, r - 10.0, b - 3.0], GRAY);
 }

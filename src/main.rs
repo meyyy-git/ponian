@@ -1158,6 +1158,7 @@ fn sections() -> Vec<Section> {
                 Item::Check("Weather.On", "Weather (MET Norway data, uses the location from the Prayer section)", true),
                 Item::Check("Rates.On", "Exchange rates (European Central Bank data via Frankfurter)", true),
                 Item::Choice("Rates.Main", "Main currency", || currency::MAIN.iter().map(|c| c.to_string()).collect(), 0),
+                Item::Check("Holidays.On", "Indonesian public holidays (from Google\u{2019}s public holiday calendar)", true),
                 Item::Text("Calendar", "Secret iCal link (Google Calendar: Settings \u{203A} Secret address in iCal format)", true),
                 Item::Note("The calendar link is stored encrypted. Its events appear on the Calendar and To-do pages; Calendar still works without a link."),
                 Item::Choice("Calendar.WeekStart", "Week starts on", || opts(&["Monday", "Sunday"]), 0),

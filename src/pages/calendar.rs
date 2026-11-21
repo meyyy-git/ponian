@@ -1,4 +1,4 @@
-use super::chip;
+use super::{chip, icon_chip};
 use crate::{
     Action, App, calendar, clock, online,
     render::{ACCENT, CHIP, GRAY, Gfx, R, WHITE},
@@ -7,6 +7,8 @@ use crate::{
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const INITIALS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
+/// merah tanggal libur
+pub const RED: u32 = 0xff8a80;
 
 /// (tahun, bulan 1..=12) yang berjarak `offset` bulan dari bulan pada hari `today`.
 pub fn month_at(today: i64, offset: i32) -> (i64, u32) {
@@ -28,24 +30,28 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     let (first, days, lead) = grid(y, m, app.week_monday);
     let selected = app.cal_day.unwrap_or(today);
     let events = online::EVENTS.lock().unwrap();
+    let holidays = online::HOLIDAYS.lock().unwrap();
 
     // kiri: bulan, navigasi, dan acara pada hari yang dipilih
     g.text(&format!("{} {y}", MONTHS[m as usize - 1]), &g.f.bold, [l, t - 2.0, l + 122.0, t + 18.0], WHITE);
-    chip(g, [l, t + 22.0, l + 26.0, t + 44.0], "\u{2039}", CHIP, buttons, Action::CalMove(-1));
-    chip(g, [l + 30.0, t + 22.0, l + 56.0, t + 44.0], "\u{203A}", CHIP, buttons, Action::CalMove(1));
+    icon_chip(g, [l, t + 22.0, l + 26.0, t + 44.0], "\u{E76B}", buttons, Action::CalMove(-1));
+    icon_chip(g, [l + 30.0, t + 22.0, l + 56.0, t + 44.0], "\u{E76C}", buttons, Action::CalMove(1));
     chip(g, [l + 60.0, t + 22.0, l + 96.0, t + 44.0], "Now", CHIP, buttons, Action::CalToday);
-    chip(g, [l + 100.0, t + 22.0, l + 122.0, t + 44.0], "+", CHIP, buttons, Action::CalAdd);
+    icon_chip(g, [l + 100.0, t + 22.0, l + 122.0, t + 44.0], "\u{E710}", buttons, Action::CalAdd);
     let (sy, sm, sd) = clock::civil_from_days(selected);
     g.text(&state::date_id(clock::weekday(selected) as u16, sd as u16, sm as u16, sy as u16), &g.f.small, [l, t + 50.0, l + 120.0, t + 66.0], GRAY);
-    // acara kalender dan tugas yang dijadwalkan pada hari itu
-    let mut list: Vec<String> = calendar::on(&events, selected).iter().map(|e| e.min.map_or(e.title.clone(), |min| format!("{} {}", clock::hhmm(min), e.title))).collect();
-    list.extend(app.tasks.iter().filter(|t| t.day == selected && !t.done).map(|t| t.time.map_or(t.title.clone(), |min| format!("{} {}", clock::hhmm(min), t.title))));
+    // hari libur, acara kalender, dan tugas pada hari itu, masing-masing dengan ikonnya
+    let timed = |min: Option<u32>, title: &str| min.map_or(title.to_string(), |min| format!("{} {title}", clock::hhmm(min)));
+    let mut list: Vec<(&str, u32, String)> = calendar::on(&holidays, selected).iter().map(|e| ("\u{E7C1}", if e.holiday { RED } else { GRAY }, e.title.clone())).collect();
+    list.extend(calendar::on(&events, selected).iter().map(|e| ("\u{E787}", ACCENT, timed(e.min, &e.title))));
+    list.extend(app.tasks.iter().filter(|t| t.day == selected && !t.done).map(|t| ("\u{E73A}", GRAY, timed(t.time, &t.title))));
     if list.is_empty() {
         g.text("No events", &g.f.small, [l, t + 66.0, l + 120.0, t + 82.0], GRAY);
     }
-    for (row, label) in list.iter().take(2).enumerate() {
+    for (row, (icon, tint, label)) in list.iter().take(2).enumerate() {
         let y = t + 66.0 + row as f32 * 17.0;
-        g.text(label, &g.f.small, [l, y, l + 120.0, y + 17.0], WHITE);
+        g.text(icon, &g.f.icon_small, [l - 1.0, y, l + 13.0, y + 17.0], *tint);
+        g.text(label, &g.f.small, [l + 17.0, y, l + 122.0, y + 17.0], WHITE);
     }
 
     // kanan: kisi bulan
@@ -69,8 +75,9 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
             if day == selected {
                 g.rrect(pill, 7.0, 0x2e2e2e);
             }
-            // hari dengan acara berwarna aksen; Minggu merah seperti kalender pada umumnya
-            if has_event { 0xb9a4ff } else if clock::weekday(day) == 0 { 0xff8a80 } else { 0xd8d8d8 }
+            // tanggal merah: hari libur nasional dan hari Minggu; hari dengan acara sendiri berwarna aksen
+            let red = clock::weekday(day) == 0 || calendar::on(&holidays, day).iter().any(|e| e.holiday);
+            if red { RED } else if has_event { 0x8cc8ff } else { 0xd8d8d8 }
         };
         g.text(&(d + 1).to_string(), &g.f.csmall, cell, color);
         buttons.push((cell, Action::CalDay(day)));

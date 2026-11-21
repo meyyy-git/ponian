@@ -16,8 +16,11 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
 
     let add = [l - 2.0, t + 68.0, l + 82.0, t + 94.0];
     g.rrect(add, 13.0, CHIP);
-    g.text("\u{E710}", &g.f.icon_small, [add[0] + 6.0, add[1], add[0] + 26.0, add[3]], WHITE);
-    g.text("Add",&g.f.small, [add[0] + 28.0, add[1], add[2], add[3]], WHITE);
+    // ikon dan label ditengahkan bersama di dalam kapsul
+    let label_w = g.width("Add", &g.f.small);
+    let x = (add[0] + add[2] - (12.0 + 6.0 + label_w)) / 2.0;
+    g.text("\u{E710}", &g.f.icon_small, [x, add[1], x + 12.0, add[3]], WHITE);
+    g.text("Add", &g.f.small, super::lifted([x + 18.0, add[1], add[2], add[3]]), WHITE);
     buttons.push((add, Action::TodoAdd));
 
     // kartu daftar: acara kalender hari ini di atas (hanya dibaca), lalu tugas

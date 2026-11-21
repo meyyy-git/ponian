@@ -1,6 +1,6 @@
 //! Widget kecil: dua di halaman Widget, dipilih di Pengaturan.
 use crate::{
-    App, astro, clock, currency, online, prayer,
+    App, astro, calendar, clock, currency, online, prayer,
     render::{ACCENT, GRAY, Gfx, R, WHITE},
     weather, worldclock,
 };
@@ -26,13 +26,17 @@ fn date(day: i64) -> String {
     format!("{d} {} {y}", MONTHS[m as usize - 1])
 }
 
-/// Acara hitung mundur: buatan user di Pengaturan, atau hari besar terdekat.
-pub fn countdown(today: i64, custom: &str) -> (String, i64) {
+/// Acara hitung mundur: buatan user di Pengaturan, lalu tanggal merah berikutnya dari kalender hari
+/// libur; tanpa keduanya, hari besar terdekat dari daftar bawaan (tanggal Islam hanya perkiraan).
+pub fn countdown(today: i64, custom: &str, holiday: Option<(String, i64)>) -> (String, i64) {
     if let Some((d, name)) = custom.split_once(' ')
         && let Some(day) = clock::parse_key(d)
         && day >= today
     {
         return (name.trim().to_string(), day);
+    }
+    if let Some(holiday) = holiday {
+        return holiday;
     }
     let (y, ..) = clock::civil_from_days(today);
     let fixed = |m, d, name: &str| {
@@ -56,10 +60,13 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
     g.rrect([l, t, r, b], 14.0, 0x161616);
     let (l, t, r, b) = (l + 12.0, t + 8.0, r - 12.0, b - 8.0);
     let now = clock::now();
-    let title = |s: &str| g.text(s, &g.f.small, [l, t, r, t + 18.0], GRAY);
+    let title = |icon: &str, s: &str| {
+        g.text(icon, &g.f.icon_small, [l - 1.0, t, l + 13.0, t + 18.0], ACCENT);
+        g.text(s, &g.f.small, [l + 18.0, t, r, t + 18.0], GRAY);
+    };
     match kind {
         0 => {
-            title("WORLD CLOCK");
+            title("\u{E774}", "WORLD CLOCK");
             for (row, city) in [app.cities.0, app.cities.1].into_iter().enumerate() {
                 let y = t + 24.0 + row as f32 * 32.0;
                 let name = worldclock::CITIES.get(city).map_or("", |c| c.0);
@@ -69,15 +76,16 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
             }
         }
         1 => {
-            title("COUNTDOWN");
-            let (name, day) = countdown(now.day, &app.countdown);
+            title("\u{E787}", "COUNTDOWN");
+            let holiday = calendar::next_holiday(&online::HOLIDAYS.lock().unwrap(), now.day).map(|(name, day)| (name.to_string(), day));
+            let (name, day) = countdown(now.day, &app.countdown, holiday);
             let left = day - now.day;
             g.text(&if left == 0 { "Today".into() } else { format!("{left} day{}", if left == 1 { "" } else { "s" }) }, &g.f.big, [l, t + 18.0, r, t + 56.0], WHITE);
             g.text(&name, &g.f.text, [l, t + 56.0, r, t + 74.0], WHITE);
             g.text(&date(day), &g.f.small, [l, t + 72.0, r, b], GRAY);
         }
         2 => {
-            title("MOON");
+            title("\u{E708}", "MOON");
             let utc = now.day as f64 + (now.min as f64 - now.offset as f64) / 1440.0;
             let age = astro::moon_age(utc);
             let lit = astro::illumination(age);
@@ -91,7 +99,7 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
             g.text(&if full <= 1 { "Full moon tonight".into() } else { format!("Full moon in {full} days") }, &g.f.small, [l, t + 62.0, r, b], GRAY);
         }
         3 => {
-            title("NEXT PRAYER");
+            title("\u{E823}", "NEXT PRAYER");
             match app.prayer {
                 Some(times) => {
                     let (n, wait) = super::prayer::next(&times, now.min);
@@ -103,7 +111,7 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
             }
         }
         5 => {
-            title("WEATHER");
+            title("\u{E753}", "WEATHER");
             match online::WEATHER.lock().unwrap().clone() {
                 Some(w) => {
                     let (desc, icon) = weather::describe(&w.symbol);
@@ -116,7 +124,7 @@ fn widget(app: &App, g: &Gfx, kind: usize, [l, t, r, b]: R) {
             }
         }
         6 => {
-            title("EXCHANGE RATES");
+            title("\u{E8AB}", "EXCHANGE RATES");
             let main = currency::MAIN[app.rates_main];
             match online::RATES.lock().unwrap().clone() {
                 Some(rates) => {

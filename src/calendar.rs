@@ -8,6 +8,8 @@ pub struct Event {
     /// menit sejak tengah malam lokal; None untuk acara sepanjang hari
     pub min: Option<u32>,
     pub title: String,
+    /// tanggal merah: acara berketerangan "Public holiday" di kalender hari libur
+    pub holiday: bool,
     repeat: Option<(Freq, Option<i64>)>,
 }
 
@@ -38,13 +40,15 @@ pub fn parse(ics: &str, offset_min: i64) -> Vec<Event> {
     // baris yang diawali spasi adalah sambungan baris sebelumnya
     let unfolded = ics.replace("\r\n ", "").replace("\n ", "").replace("\r\n\t", "").replace("\n\t", "");
     let mut events = Vec::new();
-    let (mut start, mut title, mut repeat) = (None, String::new(), None);
+    let (mut start, mut title, mut repeat, mut holiday) = (None, String::new(), None, false);
     for line in unfolded.lines() {
         let Some((key, value)) = line.split_once(':') else { continue };
         let name = key.split(';').next().unwrap_or(key);
         match name {
-            "BEGIN" if value == "VEVENT" => (start, title, repeat) = (None, String::new(), None),
+            "BEGIN" if value == "VEVENT" => (start, title, repeat, holiday) = (None, String::new(), None, false),
             "DTSTART" => start = stamp(value, offset_min),
+            // kalender hari libur Google membedakan "Public holiday" (tanggal merah) dari "Observance"
+            "DESCRIPTION" => holiday = value.starts_with("Public holiday"),
             "SUMMARY" => title = value.replace("\\,", ",").replace("\\;", ";").replace("\\n", " "),
             "RRULE" => {
                 let part = |k: &str| value.split(';').find_map(|p| p.strip_prefix(k));
@@ -58,7 +62,7 @@ pub fn parse(ics: &str, offset_min: i64) -> Vec<Event> {
             }
             "END" if value == "VEVENT" => {
                 if let Some((day, min)) = start {
-                    events.push(Event { day, min, title: std::mem::take(&mut title), repeat });
+                    events.push(Event { day, min, title: std::mem::take(&mut title), holiday, repeat });
                 }
             }
             _ => {}
@@ -96,9 +100,28 @@ pub fn on(events: &[Event], day: i64) -> Vec<Event> {
     out
 }
 
+/// Tanggal merah berikutnya (hari ini atau sesudahnya): (nama, hari).
+pub fn next_holiday(events: &[Event], today: i64) -> Option<(&str, i64)> {
+    events.iter().filter(|e| e.holiday && e.day >= today).min_by_key(|e| e.day).map(|e| (e.title.as_str(), e.day))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holidays_are_told_apart_from_observances() {
+        let ics = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261231\r\nDESCRIPTION:Observance\\nTo hide observances\r\nSUMMARY:New Year's Eve\r\nEND:VEVENT\r\n\
+                   BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20270101\r\nDESCRIPTION:Public holiday\r\nSUMMARY:New Year's Day\r\nEND:VEVENT\r\n\
+                   BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261225\r\nDESCRIPTION:Public holiday\r\nSUMMARY:Christmas Day\r\nEND:VEVENT\r\n";
+        let events = parse(ics, 7 * 60);
+        assert_eq!(events.iter().map(|e| e.holiday).collect::<Vec<_>>(), [false, true, true]);
+        let day = |m, d| clock::days_from_civil(2026, m, d);
+        assert_eq!(next_holiday(&events, day(11, 21)), Some(("Christmas Day", day(12, 25))));
+        assert_eq!(next_holiday(&events, day(12, 25)), Some(("Christmas Day", day(12, 25))));
+        assert_eq!(next_holiday(&events, day(12, 26)), Some(("New Year's Day", clock::days_from_civil(2027, 1, 1))));
+        assert_eq!(next_holiday(&events, clock::days_from_civil(2027, 1, 2)), None);
+    }
 
     #[test]
     fn parses_and_repeats() {

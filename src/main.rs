@@ -638,8 +638,10 @@ impl App {
                 let n = self.pages.len();
                 if n > 1 {
                     for (glyph, x, action) in [("\u{E76B}", x0 + 2.0, Action::PrevPage), ("\u{E76C}", x1 - 24.0, Action::NextPage)] {
-                        let btn = [x, 78.0, x + 22.0, 108.0];
-                        g.text(glyph, &g.f.icon_small, btn, DIM);
+                        // tombol bulat dengan latar sendiri supaya terbaca sebagai tombol; panahnya memutih saat disorot
+                        let btn = [x, 82.0, x + 22.0, 104.0];
+                        g.rrect(btn, 11.0, CHIP);
+                        g.text(glyph, &g.f.icon_small, btn, if self.hot == Some(btn) { WHITE } else { 0xc8c8c8 });
                         buttons.push((btn, action));
                     }
                     // titik halaman; saat di-hover berubah menjadi deretan ikon halaman

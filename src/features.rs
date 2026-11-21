@@ -141,7 +141,7 @@ impl App {
         let text = if self.notify_preview {
             [last.app.as_str(), last.title.as_str(), last.body.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{B7} ")
         } else {
-            format!("{} \u{B7} pesan baru", last.app)
+            format!("{} \u{B7} new message", last.app)
         };
         self.info("\u{EA8F}", text, 6000);
         // info() tidak menimpa pengingat yang sedang tampil, jadi tautan app hanya dipasang pada popup notifikasi;
@@ -165,9 +165,9 @@ impl App {
         if band != self.battery_band {
             self.battery_band = band;
             match band {
-                1 => self.alert("\u{EBA0}", format!("Baterai lemah ({pct}%) \u{B7} colokkan charger"), None),
-                2 => self.alert("\u{EBA0}", format!("Baterai kritis ({pct}%) \u{B7} colokkan sekarang"), None),
-                3 => self.info("\u{EBB5}", "Baterai penuh \u{B7} charger boleh dicabut".into(), 4000),
+                1 => self.alert("\u{EBA0}", format!("Battery low ({pct}%) \u{B7} plug in the charger"), None),
+                2 => self.alert("\u{EBA0}", format!("Battery critical ({pct}%) \u{B7} plug in now"), None),
+                3 => self.info("\u{EBB5}", "Battery full \u{B7} you can unplug the charger".into(), 4000),
                 _ => {}
             }
         }
@@ -179,7 +179,7 @@ impl App {
         if before.is_none() || before.as_ref() == Some(&now) || !settings::flag("Popup.Wifi", true) {
             return;
         }
-        let text = if now.is_empty() { "Tidak ada koneksi internet".into() } else if now == "Ethernet" { "Terhubung lewat kabel".into() } else { format!("Terhubung ke Wi-Fi {now}") };
+        let text = if now.is_empty() { "No internet connection".into() } else if now == "Ethernet" { "Connected via Ethernet".into() } else { format!("Connected to Wi-Fi {now}") };
         self.info(if now.is_empty() { "\u{EB5E}" } else { "\u{E701}" }, text, 4000);
     }
 
@@ -245,7 +245,7 @@ impl App {
                     if before == 0 && settings::flag("Prayer.Pause", false) {
                         let _ = self.tx.send(Msg::Pause);
                     }
-                    let text = if before == 0 { format!("Waktunya salat {}", prayer::NAMES[i]) } else { format!("{} {before} menit lagi ({})", prayer::NAMES[i], clock::hhmm(times[i])) };
+                    let text = if before == 0 { format!("Time for {} prayer", prayer::NAMES[i]) } else { format!("{} in {before} min ({})", prayer::NAMES[i], clock::hhmm(times[i])) };
                     return self.alert("\u{E706}", text, None);
                 }
             }
@@ -301,15 +301,15 @@ impl App {
                 self.timer.set(minutes);
                 settings::set_dword("Timer.Minutes", minutes as u32);
             }
-            Action::TodoAdd => self.open_input(INPUT_TODO, "", "Tugas baru, mis. Rapat besok 14:30"),
+            Action::TodoAdd => self.open_input(INPUT_TODO, "", "New task, e.g. Meeting tomorrow 14:30"),
             Action::TodoEdit(i) => {
                 if let Some(text) = self.tasks.get(i).map(|t| todo::to_input(t, now.day)) {
                     self.editing = i;
-                    self.open_input(INPUT_TODO_EDIT, &text, "Ubah tugas");
+                    self.open_input(INPUT_TODO_EDIT, &text, "Edit task");
                 }
             }
-            Action::CalAdd => self.open_input(INPUT_CAL, "", "Acara di hari terpilih, mis. Rapat 14:30"),
-            Action::TimerCustom => self.open_input(INPUT_TIMER, "", "Durasi dalam menit, atau jam:menit (mis. 90 atau 1:30)"),
+            Action::CalAdd => self.open_input(INPUT_CAL, "", "Event on the selected day, e.g. Meeting 14:30"),
+            Action::TimerCustom => self.open_input(INPUT_TIMER, "", "Duration in minutes, or hours:minutes (e.g. 90 or 1:30)"),
             Action::TimerMode(stopwatch) => self.stopwatch_mode = stopwatch,
             Action::StopwatchToggle => self.stopwatch.toggle(Instant::now()),
             Action::StopwatchReset => self.stopwatch.reset(),
@@ -351,7 +351,7 @@ impl App {
             Action::ClipCopy(i) => {
                 if let Some(clip) = self.clips.get(i) {
                     shelf::write(self.hwnd, clip);
-                    self.info("\u{E8C8}", "Disalin ke clipboard".into(), 1500);
+                    self.info("\u{E8C8}", "Copied to clipboard".into(), 1500);
                 }
             }
         }
@@ -362,7 +362,7 @@ impl App {
         match result {
             Ok(text) => {
                 shelf::write_text(self.hwnd, &text);
-                self.info("\u{E8C8}", "Teks dari layar disalin".into(), 4000);
+                self.info("\u{E8C8}", "Screen text copied".into(), 4000);
             }
             Err(e) => self.info("\u{E7BA}", e, 4000),
         }
@@ -377,7 +377,7 @@ impl App {
         let _ = unsafe { GetWindowRect(self.hwnd, &mut wr) };
         let cx = crate::WIN.0 / 2.0;
         let px = |x: f32| (x * self.scale) as i32;
-        let rect = RECT { left: wr.left + px(cx - 170.0), top: wr.top + px(74.0), right: wr.left + px(cx + 170.0), bottom: wr.top + px(108.0) };
+        let rect = RECT { left: wr.left + px(cx - 170.0), top: wr.top + px(72.0), right: wr.left + px(cx + 170.0), bottom: wr.top + px(110.0) };
         input::open(self.hwnd, id, rect, self.scale, initial, hint);
     }
 
@@ -427,7 +427,7 @@ impl App {
             1 => {
                 self.editing = i;
                 let name = self.apps[i].name.clone();
-                self.open_input(INPUT_APP_NAME, &name, "Nama pintasan");
+                self.open_input(INPUT_APP_NAME, &name, "Shortcut name");
             }
             2 if i > 0 => self.apps.swap(i, i - 1),
             3 if i + 1 < self.apps.len() => self.apps.swap(i, i + 1),

@@ -69,9 +69,9 @@ pub fn hhmm(min: u32) -> String {
 /// "1 j 20 mnt", "45 mnt"
 pub fn span(min: u32) -> String {
     match (min / 60, min % 60) {
-        (0, m) => format!("{m} mnt"),
-        (h, 0) => format!("{h} j"),
-        (h, m) => format!("{h} j {m} mnt"),
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
     }
 }
 
@@ -97,9 +97,9 @@ mod tests {
     #[test]
     fn formats() {
         assert_eq!(hhmm(905), "15:05");
-        assert_eq!(span(80), "1 j 20 mnt");
-        assert_eq!(span(45), "45 mnt");
-        assert_eq!(span(120), "2 j");
+        assert_eq!(span(80), "1 h 20 min");
+        assert_eq!(span(45), "45 min");
+        assert_eq!(span(120), "2 h");
     }
 }
 

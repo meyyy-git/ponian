@@ -151,11 +151,11 @@ impl Clip {
         match self {
             Clip::Text(t) => ("", t.split_whitespace().collect::<Vec<_>>().join(" ")),
             Clip::Files(f) if f.len() == 1 => ("\u{E8A5}", file_name(&f[0]).to_string()),
-            Clip::Files(f) => ("\u{E8A5}", format!("{} +{} file lain", f.first().map_or("", |p| file_name(p)), f.len().saturating_sub(1))),
+            Clip::Files(f) => ("\u{E8A5}", format!("{} +{} more file{}", f.first().map_or("", |p| file_name(p)), f.len().saturating_sub(1), if f.len() == 2 { "" } else { "s" })),
             Clip::Image(dib) => {
                 // lebar di byte 4..8 dan tinggi di 8..12 (negatif kalau barisnya dari atas)
                 let side = |at: usize| dib.get(at..at + 4).map_or(0, |b| i32::from_le_bytes(b.try_into().unwrap()).unsigned_abs());
-                ("\u{EB9F}", format!("Gambar {} \u{D7} {}", side(4), side(8)))
+                ("\u{EB9F}", format!("Image {} \u{D7} {}", side(4), side(8)))
             }
         }
     }
@@ -329,8 +329,8 @@ mod tests {
         let mut dib = vec![0u8; 44];
         dib[4..8].copy_from_slice(&640i32.to_le_bytes());
         dib[8..12].copy_from_slice(&(-480i32).to_le_bytes());
-        assert_eq!(Image(dib).label().1, "Gambar 640 \u{D7} 480");
-        assert_eq!(Files(vec![r"C:\a\satu.txt".into(), r"C:\a\dua.txt".into()]).label().1, "satu.txt +1 file lain");
+        assert_eq!(Image(dib).label().1, "Image 640 \u{D7} 480");
+        assert_eq!(Files(vec![r"C:\a\satu.txt".into(), r"C:\a\dua.txt".into()]).label().1, "satu.txt +1 more file");
         // "C:\a" = 4 unit + nol = 10 byte, lalu nol penutup 2 byte
         let list = super::drop_list(&[r"C:\a".to_string()]);
         assert_eq!((list.len(), list[0], list[16], list[20]), (32, 20, 1, b'C'));

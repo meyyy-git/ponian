@@ -80,7 +80,7 @@ pub fn start(owner: HWND) {
         let instance: HINSTANCE = module.into();
         let class = w!("PonianOcr");
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: instance, lpszClassName: class, hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(), ..Default::default() });
-        let Ok(overlay) = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, class, w!("Pilih area teks"), WS_POPUP, x, y, w, h, None, None, Some(instance), None) else {
+        let Ok(overlay) = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, class, w!("Select text area"), WS_POPUP, x, y, w, h, None, None, Some(instance), None) else {
             let _ = (DeleteObject(bright.into()), DeleteObject(dim.into()));
             return;
         };
@@ -129,9 +129,9 @@ fn recognize(bgra: &[u8], w: i32, h: i32) -> std::result::Result<String, String>
     }
     let max = OcrEngine::MaxImageDimension().unwrap_or(2600) as i32;
     if w > max || h > max {
-        return Err("Area terlalu besar. Pilih bagian yang lebih kecil.".into());
+        return Err("Area too large. Select a smaller part.".into());
     }
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| "Windows belum punya bahasa OCR. Tambahkan di Pengaturan \u{203A} Waktu & bahasa.".to_string())?;
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| "Windows has no OCR language. Add one in Settings \u{203A} Time & language.".to_string())?;
     let run = || -> windows::core::Result<String> {
         let buffer = CryptographicBuffer::CreateFromByteArray(bgra)?;
         let bmp = SoftwareBitmap::CreateCopyFromBuffer(&buffer, BitmapPixelFormat::Bgra8, w, h)?;
@@ -140,8 +140,8 @@ fn recognize(bgra: &[u8], w: i32, h: i32) -> std::result::Result<String, String>
     };
     match run() {
         Ok(t) if !t.trim().is_empty() => Ok(t),
-        Ok(_) => Err("Tidak ada teks yang terbaca. Coba pilih area yang lebih jelas.".into()),
-        Err(_) => Err("Gagal membaca gambar. Coba lagi.".into()),
+        Ok(_) => Err("No text found. Try selecting a clearer area.".into()),
+        Err(_) => Err("Couldn\u{2019}t read the image. Try again.".into()),
     }
 }
 

@@ -35,7 +35,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
         g.text(&m.title, &g.f.bold, [tx, top + 20.0, title_r, top + 40.0], WHITE);
         g.text(&m.artist, &g.f.small, [tx, top + 38.0, r, top + 54.0], GRAY);
     } else {
-        g.text("Tidak ada media", &g.f.bold, [tx, top + 20.0, r, top + 40.0], WHITE);
+        g.text("Nothing playing", &g.f.bold, [tx, top + 20.0, r, top + 40.0], WHITE);
     }
 
     // batang progres dengan waktu berjalan dan sisa waktu; klik untuk melompat

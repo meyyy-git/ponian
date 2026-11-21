@@ -16,12 +16,12 @@ pub fn next(times: &[u32; 6], now_min: u32) -> (usize, u32) {
 
 pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R) {
     let Some(times) = app.prayer else {
-        g.text("Atur lokasi di Pengaturan \u{203A} Salat untuk melihat jadwal.", &g.f.csmall, [l, t, r, b], GRAY);
+        g.text("Set a location in Settings \u{203A} Prayer to see prayer times.", &g.f.csmall, [l, t, r, b], GRAY);
         return;
     };
     let now = clock::now();
     let (n, wait) = next(&times, now.min);
-    g.text(&format!("{} dalam {}", prayer::NAMES[n], clock::span(wait)), &g.f.bold, [l, t, r, t + 24.0], WHITE);
+    g.text(&format!("{} in {}", prayer::NAMES[n], clock::span(wait)), &g.f.bold, [l, t, r, t + 24.0], WHITE);
     g.text(&app.prayer_info, &g.f.small, [l, t + 24.0, r, t + 42.0], GRAY);
 
     let cols = [0, 2, 3, 4, 5];

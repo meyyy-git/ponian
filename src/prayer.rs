@@ -17,15 +17,15 @@ pub struct Method {
 pub const METHODS: [Method; 8] = [
     Method { name: "Kemenag RI", fajr: 20.0, isha: Isha::Angle(18.0), ihtiyat: 2.0 },
     Method { name: "JAKIM (Malaysia)", fajr: 20.0, isha: Isha::Angle(18.0), ihtiyat: 0.0 },
-    Method { name: "MUIS (Singapura)", fajr: 20.0, isha: Isha::Angle(18.0), ihtiyat: 0.0 },
-    Method { name: "Liga Muslim Dunia", fajr: 18.0, isha: Isha::Angle(17.0), ihtiyat: 0.0 },
+    Method { name: "MUIS (Singapore)", fajr: 20.0, isha: Isha::Angle(18.0), ihtiyat: 0.0 },
+    Method { name: "Muslim World League", fajr: 18.0, isha: Isha::Angle(17.0), ihtiyat: 0.0 },
     Method { name: "Umm al-Qura", fajr: 18.5, isha: Isha::Minutes(90.0), ihtiyat: 0.0 },
-    Method { name: "Mesir", fajr: 19.5, isha: Isha::Angle(17.5), ihtiyat: 0.0 },
+    Method { name: "Egypt", fajr: 19.5, isha: Isha::Angle(17.5), ihtiyat: 0.0 },
     Method { name: "Karachi", fajr: 18.0, isha: Isha::Angle(18.0), ihtiyat: 0.0 },
-    Method { name: "ISNA (Amerika Utara)", fajr: 15.0, isha: Isha::Angle(15.0), ihtiyat: 0.0 },
+    Method { name: "ISNA (North America)", fajr: 15.0, isha: Isha::Angle(15.0), ihtiyat: 0.0 },
 ];
 
-pub const NAMES: [&str; 6] = ["Subuh", "Terbit", "Zuhur", "Asar", "Magrib", "Isya"];
+pub const NAMES: [&str; 6] = ["Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"];
 
 fn sin(d: f64) -> f64 {
     d.to_radians().sin()

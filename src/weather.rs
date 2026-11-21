@@ -38,18 +38,18 @@ pub fn describe(symbol: &str) -> (&'static str, &'static str) {
     let base = symbol.split('_').next().unwrap_or("");
     let night = symbol.ends_with("_night");
     match base {
-        "clearsky" if night => ("Cerah", "\u{1F319}"),
-        "clearsky" => ("Cerah", "\u{2600}\u{FE0F}"),
-        "fair" => ("Cerah berawan", "\u{1F324}\u{FE0F}"),
-        "partlycloudy" => ("Berawan sebagian", "\u{26C5}"),
-        "cloudy" => ("Berawan", "\u{2601}\u{FE0F}"),
-        "fog" => ("Berkabut", "\u{1F32B}\u{FE0F}"),
-        b if b.contains("thunder") => ("Badai petir", "\u{26C8}\u{FE0F}"),
-        b if b.contains("heavyrain") => ("Hujan lebat", "\u{1F327}\u{FE0F}"),
-        b if b.contains("lightrain") => ("Hujan ringan", "\u{1F326}\u{FE0F}"),
-        b if b.contains("rain") => ("Hujan", "\u{1F327}\u{FE0F}"),
-        b if b.contains("sleet") => ("Hujan es", "\u{1F328}\u{FE0F}"),
-        b if b.contains("snow") => ("Salju", "\u{2744}\u{FE0F}"),
+        "clearsky" if night => ("Clear", "\u{1F319}"),
+        "clearsky" => ("Clear", "\u{2600}\u{FE0F}"),
+        "fair" => ("Mostly clear", "\u{1F324}\u{FE0F}"),
+        "partlycloudy" => ("Partly cloudy", "\u{26C5}"),
+        "cloudy" => ("Cloudy", "\u{2601}\u{FE0F}"),
+        "fog" => ("Foggy", "\u{1F32B}\u{FE0F}"),
+        b if b.contains("thunder") => ("Thunderstorm", "\u{26C8}\u{FE0F}"),
+        b if b.contains("heavyrain") => ("Heavy rain", "\u{1F327}\u{FE0F}"),
+        b if b.contains("lightrain") => ("Light rain", "\u{1F326}\u{FE0F}"),
+        b if b.contains("rain") => ("Rain", "\u{1F327}\u{FE0F}"),
+        b if b.contains("sleet") => ("Sleet", "\u{1F328}\u{FE0F}"),
+        b if b.contains("snow") => ("Snow", "\u{2744}\u{FE0F}"),
         _ => ("", "\u{2601}\u{FE0F}"),
     }
 }
@@ -65,8 +65,8 @@ mod tests {
             {"time":"2026-11-21T08:00:00Z","data":{"instant":{"details":{"air_temperature":29.1}}}},
             {"time":"2026-11-21T09:00:00Z","data":{"instant":{"details":{"air_temperature":24.0}}}}]}}"#;
         assert_eq!(parse(json), Some(Weather { temp: 27.4, symbol: "partlycloudy_day".into(), min: 24.0, max: 29.1 }));
-        assert_eq!(describe("partlycloudy_day").0, "Berawan sebagian");
-        assert_eq!(describe("lightrainshowers_night").0, "Hujan ringan");
+        assert_eq!(describe("partlycloudy_day").0, "Partly cloudy");
+        assert_eq!(describe("lightrainshowers_night").0, "Light rain");
     }
 
     /// Butuh internet: `cargo test -- --ignored`

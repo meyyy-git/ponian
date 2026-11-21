@@ -15,7 +15,7 @@ pub fn illumination(age: f64) -> f64 {
 }
 
 pub fn phase_name(age: f64) -> &'static str {
-    const NAMES: [&str; 8] = ["Bulan baru", "Sabit awal", "Kuartal awal", "Cembung awal", "Purnama", "Cembung akhir", "Kuartal akhir", "Sabit akhir"];
+    const NAMES: [&str; 8] = ["New moon", "Waxing crescent", "First quarter", "Waxing gibbous", "Full moon", "Waning gibbous", "Last quarter", "Waning crescent"];
     NAMES[((age / SYNODIC * 8.0 + 0.5).floor() as usize) % 8]
 }
 
@@ -66,7 +66,7 @@ mod tests {
         let full = days_from_civil(2024, 1, 25) as f64 + 17.9 / 24.0;
         assert!((moon_age(full) - SYNODIC / 2.0).abs() < 0.6, "umur {}", moon_age(full));
         assert!(illumination(moon_age(full)) > 0.99);
-        assert_eq!(phase_name(moon_age(full)), "Purnama");
+        assert_eq!(phase_name(moon_age(full)), "Full moon");
         // bulan baru 11 Jan 2024 11:57 UTC
         let new = days_from_civil(2024, 1, 11) as f64 + 0.5;
         assert!(illumination(moon_age(new)) < 0.01);

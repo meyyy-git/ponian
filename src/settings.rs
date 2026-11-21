@@ -2,7 +2,7 @@
 //! Data rahasia (API key, link kalender) dienkripsi dengan DPAPI sehingga hanya akun Windows ini yang bisa membacanya.
 use crate::{
     input,
-    render::{ACCENT, GRAY, Gfx, R, WHITE},
+    render::{ACCENT, Gfx, R, WHITE},
 };
 use std::{
     cell::RefCell,
@@ -19,7 +19,7 @@ use windows::{
         },
         UI::{
             Controls::MARGINS,
-            HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
+            HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::*,
             WindowsAndMessaging::*,
         },
@@ -149,16 +149,21 @@ pub fn opts(items: &'static [&'static str]) -> Vec<String> {
     items.iter().map(|s| s.to_string()).collect()
 }
 
-// Jendela digambar sendiri dengan Direct2D di atas latar akrilik Windows (kartu kaca), bukan kontrol
-// Windows biasa: kontrol GDI tidak bisa tampil benar di atas latar tembus pandang.
+// Jendela bergaya macOS, digambar sendiri dengan Direct2D di atas latar akrilik Windows: tanpa bingkai
+// Windows, tombol lampu lalu lintas di kiri atas, panel kiri tembus pandang, dan grup opsi membulat.
+// Kontrol Windows biasa tidak dipakai karena kontrol GDI tidak tampil benar di atas latar tembus pandang.
 // shortcut: pembaca layar tidak melihat isi jendela ini; pakai UI Automation kalau itu dibutuhkan.
 
-/// Ukuran isi jendela dalam DIP, lebar panel kiri, dan batas atas-bawah area gulir di kanan.
-const W: f32 = 720.0;
-const H: f32 = 520.0;
-const SIDE: f32 = 186.0;
-const VIEW: (f32, f32) = (56.0, H - 12.0);
+/// Ukuran jendela dalam DIP, lebar panel kiri, tinggi pita atas (untuk menyeret jendela),
+/// dan batas atas-bawah area gulir di kanan.
+const W: f32 = 760.0;
+const H: f32 = 540.0;
+const SIDE: f32 = 214.0;
+const BAR: f32 = 48.0;
+const VIEW: (f32, f32) = (BAR + 4.0, H - 14.0);
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// warna kotak ikon di panel kiri, bergiliran (warna sistem macOS mode gelap)
+const TILES: [u32; 8] = [0x8e8e93, 0x0a84ff, 0xff375f, 0x5e5ce6, 0xff9f0a, 0xff453a, 0x30d158, 0x40c8e0];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Hit {
@@ -167,6 +172,8 @@ enum Hit {
     Choice(usize),
     Text(usize),
     Move(usize, i32),
+    Close,
+    Minimize,
 }
 
 struct Ui {
@@ -177,6 +184,8 @@ struct Ui {
     scale: f32,
     /// latar akrilik aktif (Windows 11); kalau tidak, jendela diberi latar gelap biasa
     glass: bool,
+    /// jendela sedang aktif; saat tidak, warna aksen dan lampu lalu lintas meredup seperti di macOS
+    active: bool,
     scroll: f32,
     /// tinggi isi bagian yang sedang tampil, untuk batas gulir
     content: f32,
@@ -218,35 +227,46 @@ pub fn open() {
         let Ok(module) = GetModuleHandleW(None) else { return };
         let instance: HINSTANCE = module.into();
         let class = w!("PonianSettings");
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: instance, lpszClassName: class, hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0), ..Default::default() });
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let Ok(hwnd) = CreateWindowExW(WINDOW_EX_STYLE(0), class, w!("Pengaturan Ponian"), style, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, None, None, Some(instance), None) else {
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(proc),
+            hInstance: instance,
+            lpszClassName: class,
+            hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0),
+            // ikon aplikasi (resource nomor 1) untuk tombol di taskbar
+            hIcon: LoadIconW(Some(instance), PCWSTR(1 as _)).unwrap_or_default(),
+            ..Default::default()
+        });
+        // gaya jendela biasa dipertahankan supaya Windows tetap memberi bayangan, sudut membulat, dan
+        // animasi minimize; bingkainya sendiri dibuang di WM_NCCALCSIZE. Tanpa WS_SYSMENU supaya Windows
+        // tidak ikut menggambar tombol judulnya sendiri di pojok kanan atas.
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_MINIMIZEBOX;
+        let Ok(hwnd) = CreateWindowExW(WINDOW_EX_STYLE(0), class, w!("Ponian Settings"), style, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, None, None, Some(instance), None) else {
             return;
         };
         // shortcut: ukuran mengikuti DPI layar saat dibuka; pindah ke layar ber-DPI lain tidak mengubahnya.
         let dpi = GetDpiForWindow(hwnd).max(96);
         let scale = dpi as f32 / 96.0;
         let (w, h) = ((W * scale) as i32, (H * scale) as i32);
-        let mut rc = RECT { left: 0, top: 0, right: w, bottom: h };
-        let _ = AdjustWindowRectExForDpi(&mut rc, style, false, WINDOW_EX_STYLE(0), dpi);
-        let _ = SetWindowPos(hwnd, None, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER);
+        let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
         let Ok(g) = Gfx::new(w, h, dpi as f32) else {
             let _ = DestroyWindow(hwnd);
             return;
         };
-        // judul gelap dan latar akrilik. Windows 10 menolak atribut latar; jendela lalu memakai warna gelap biasa.
+        // latar akrilik. Windows 10 menolak atribut ini; jendela lalu memakai warna gelap biasa.
         let (dark, acrylic) = (1i32, DWMSBT_TRANSIENTWINDOW);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as _, 4);
         let glass = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &acrylic as *const _ as _, 4).is_ok()
             && DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 }).is_ok();
-        UI.set(Some(Ui { hwnd, g, sections: build(), current: 0, scale, glass, scroll: 0.0, content: 0.0, hits: Vec::new(), hot: None, focus: None }));
+        UI.set(Some(Ui { hwnd, g, sections: build(), current: 0, scale, glass, active: true, scroll: 0.0, content: 0.0, hits: Vec::new(), hot: None, focus: None }));
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
     }
 }
 
 fn draw(ui: &mut Ui) {
-    let (current, scroll, hot, focus) = (ui.current, ui.scroll, ui.hot, ui.focus);
+    let (current, scroll, hot, focus, active) = (ui.current, ui.scroll, ui.hot, ui.focus, ui.active);
+    // kursor di atas lampu lalu lintas (dari gambar sebelumnya): ketiganya menampilkan simbolnya
+    let lights_hot = hot.and_then(|i| ui.hits.get(i)).is_some_and(|(_, h)| matches!(h, Hit::Close | Hit::Minimize));
     let g = &ui.g;
     let mut hits: Vec<(R, Hit)> = Vec::new();
     // catat area klik; hasilnya true kalau kursor sedang di atasnya
@@ -264,57 +284,57 @@ fn draw(ui: &mut Ui) {
         g.stroke(r, radius, rgb, 1.0);
         g.alpha.set(1.0);
     };
+    // sakelar memakai warna aksen, seperti NSSwitch
     let toggle = |right: f32, cy: f32, on: bool| {
-        let r = [right - 38.0, cy - 10.0, right, cy + 10.0];
+        let r = [right - 36.0, cy - 10.0, right, cy + 10.0];
         if on {
             g.rrect(r, 10.0, ACCENT);
         } else {
-            fill(r, 10.0, WHITE, 0.16);
-            line(r, 10.0, WHITE, 0.20);
+            fill(r, 10.0, WHITE, 0.17);
         }
-        let x = if on { right - 17.0 } else { right - 35.0 };
-        g.rrect([x, cy - 7.0, x + 14.0, cy + 7.0], 7.0, if on { WHITE } else { 0xd0d0d6 });
+        let x = if on { right - 18.0 } else { right - 34.0 };
+        g.rrect([x, cy - 8.0, x + 16.0, cy + 8.0], 8.0, WHITE);
     };
 
     g.begin();
+    // panel kiri tembus pandang (kaca); isi di kanan lebih pekat supaya teks mudah dibaca
     if ui.glass {
-        // lapisan gelap tipis supaya teks tetap terbaca di atas wallpaper terang
-        fill([0.0, 0.0, W, H], 0.0, 0x0c0c14, 0.42);
+        fill([0.0, 0.0, SIDE, H], 0.0, 0x1c1c1e, 0.46);
+        fill([SIDE, 0.0, W, H], 0.0, 0x1e1e20, 0.88);
     } else {
-        g.rrect([0.0, 0.0, W, H], 0.0, 0x17171d);
+        g.rrect([0.0, 0.0, SIDE, H], 0.0, 0x2a2a2d);
+        g.rrect([SIDE, 0.0, W, H], 0.0, 0x1e1e20);
     }
-    g.blob(W - 70.0, 30.0, 280.0, ACCENT, 0.22);
-    g.blob(110.0, H - 10.0, 250.0, 0x22d3ee, 0.10);
+    fill([SIDE - 0.5, 0.0, SIDE + 0.5, H], 0.0, 0x000000, 0.5);
 
-    // panel kiri: daftar bagian
-    let side = [10.0, 10.0, SIDE, H - 10.0];
-    fill(side, 14.0, WHITE, 0.06);
-    line(side, 14.0, WHITE, 0.10);
+    // panel kiri: daftar bagian dengan kotak ikon berwarna
     for (i, s) in ui.sections.iter().enumerate() {
-        let y = 18.0 + i as f32 * 34.0;
-        let r = [16.0, y, SIDE - 6.0, y + 32.0];
+        let y = BAR + 6.0 + i as f32 * 32.0;
+        let r = [10.0, y, SIDE - 10.0, y + 30.0];
         let over = hit(r, Hit::Section(i));
-        if i == current {
-            fill(r, 9.0, WHITE, 0.14);
-            g.rrect([16.0, y + 9.0, 19.0, y + 23.0], 1.5, ACCENT);
+        if i == current && active {
+            g.rrect(r, 7.0, ACCENT);
+        } else if i == current {
+            fill(r, 7.0, WHITE, 0.14);
         } else if over {
-            fill(r, 9.0, WHITE, 0.07);
+            fill(r, 7.0, WHITE, 0.07);
         }
-        let color = if i == current { WHITE } else { 0xc4c4cc };
-        g.text(s.icon, &g.f.icon_mid, [26.0, y, 50.0, y + 32.0], color);
-        g.text(s.name, &g.f.text, [56.0, y, SIDE - 10.0, y + 32.0], color);
+        let tile = [18.0, y + 4.0, 40.0, y + 26.0];
+        g.rrect(tile, 6.0, TILES[i % TILES.len()]);
+        g.text(s.icon, &g.f.icon_mid, tile, WHITE);
+        g.text(s.name, &g.f.text, [50.0, y, SIDE - 16.0, y + 30.0], WHITE);
     }
 
-    // kanan: judul, lalu kartu kaca berisi baris-baris opsi
+    // kanan: judul di pita atas, lalu grup-grup opsi
     let sec = &ui.sections[current];
-    let (x0, x1, pad) = (SIDE + 16.0, W - 16.0, 14.0);
-    g.text(sec.name, &g.f.title, [x0 + 2.0, 12.0, x1, 50.0], WHITE);
+    let (x0, x1, pad) = (SIDE + 22.0, W - 22.0, 14.0);
+    g.text(sec.name, &g.f.title, [x0 + 2.0, 6.0, x1, BAR], WHITE);
     g.clip([x0 - 2.0, VIEW.0, x1 + 2.0, VIEW.1]);
     let full = x1 - x0 - 2.0 * pad;
     // lebar label: sisa baris setelah kontrol di kanannya
     let label_w = |item: &Item| match item {
-        Item::Check(..) => full - 52.0,
-        Item::Movable(..) => full - 116.0,
+        Item::Check(..) => full - 50.0,
+        Item::Movable(..) => full - 108.0,
         Item::Choice(..) => full - 200.0,
         Item::Text(..) | Item::Note(_) => full,
     };
@@ -322,9 +342,9 @@ fn draw(ui: &mut Ui) {
         .items
         .iter()
         .map(|item| match item {
-            Item::Note(text) => g.height(text, &g.f.wrap, x1 - x0 - 8.0) + 14.0,
-            Item::Text(_, label, _) => g.height(label, &g.f.wrap, full) + 60.0,
-            Item::Check(_, label, _) | Item::Movable(_, label, ..) | Item::Choice(_, label, ..) => (g.height(label, &g.f.wrap, label_w(item)) + 24.0).max(42.0),
+            Item::Note(text) => g.height(text, &g.f.wrap, x1 - x0 - 16.0) + 14.0,
+            Item::Text(_, label, _) => g.height(label, &g.f.wrap, full) + 58.0,
+            Item::Check(_, label, _) | Item::Movable(_, label, ..) | Item::Choice(_, label, ..) => (g.height(label, &g.f.wrap, label_w(item)) + 22.0).max(40.0),
         })
         .collect();
     let mut y = VIEW.0 + 2.0 - scroll;
@@ -332,80 +352,82 @@ fn draw(ui: &mut Ui) {
         let h = heights[i];
         let is_note = |n: usize| matches!(sec.items.get(n), Some(Item::Note(_)));
         if let Item::Note(text) = item {
-            g.text(text, &g.f.wrap, [x0 + 4.0, y + 2.0, x1 - 4.0, y + h], 0xb0b0bc);
+            g.text(text, &g.f.wrap, [x0 + 8.0, y + 2.0, x1 - 8.0, y + h], 0x98989f);
             y += h;
             continue;
         }
         if i == 0 || is_note(i - 1) {
-            // satu kartu membungkus semua baris sampai keterangan berikutnya
+            // satu grup membungkus semua baris sampai keterangan berikutnya
             let total: f32 = (i..sec.items.len()).take_while(|&n| !is_note(n)).map(|n| heights[n]).sum();
-            fill([x0, y, x1, y + total], 12.0, WHITE, 0.07);
-            line([x0, y, x1, y + total], 12.0, WHITE, 0.12);
+            fill([x0, y, x1, y + total], 10.0, WHITE, 0.055);
+            line([x0, y, x1, y + total], 10.0, WHITE, 0.07);
         } else {
-            fill([x0 + pad, y - 0.5, x1 - pad, y + 0.5], 0.0, WHITE, 0.09);
+            // garis pemisah menjorok dari kiri, seperti daftar macOS
+            fill([x0 + pad, y - 0.5, x1, y + 0.5], 0.0, WHITE, 0.08);
         }
         let (row, cy) = ([x0, y, x1, y + h], y + h / 2.0);
-        let hover = [x0 + 4.0, y + 4.0, x1 - 4.0, y + h - 4.0];
         // label di tengah baris; untuk kolom teks label ada di atas kolomnya
         let label = |text: &str, top: f32| g.text(text, &g.f.wrap, [x0 + pad, top, x0 + pad + label_w(item), top + h], WHITE);
         let centered = |text: &str| label(text, y + (h - g.height(text, &g.f.wrap, label_w(item))) / 2.0);
         match item {
             Item::Check(key, text, default) => {
-                if hit(row, Hit::Toggle(i)) {
-                    fill(hover, 9.0, WHITE, 0.05);
-                }
+                hit(row, Hit::Toggle(i));
                 centered(text);
                 toggle(x1 - pad, cy, dword(key, *default as u32) != 0);
             }
             Item::Movable(key, text, default, _) => {
-                if hit(row, Hit::Toggle(i)) {
-                    fill(hover, 9.0, WHITE, 0.05);
-                }
+                hit(row, Hit::Toggle(i));
                 centered(text);
                 toggle(x1 - pad, cy, dword(key, *default as u32) != 0);
                 for (k, (icon, dir)) in [("\u{E70E}", -1), ("\u{E70D}", 1)].into_iter().enumerate() {
-                    let x = x1 - pad - 110.0 + k as f32 * 30.0;
-                    let b = [x, cy - 13.0, x + 26.0, cy + 13.0];
+                    let x = x1 - pad - 100.0 + k as f32 * 28.0;
+                    let b = [x, cy - 12.0, x + 24.0, cy + 12.0];
                     let over = hit(b, Hit::Move(i, dir));
-                    fill(b, 8.0, WHITE, if over { 0.22 } else { 0.09 });
+                    fill(b, 6.0, WHITE, if over { 0.22 } else { 0.09 });
                     g.text(icon, &g.f.icon_small, b, WHITE);
                 }
             }
             Item::Choice(key, text, options, default) => {
                 let over = hit(row, Hit::Choice(i));
-                if over {
-                    fill(hover, 9.0, WHITE, 0.05);
-                }
                 centered(text);
+                // tombol pop-up macOS: nilai, lalu kotak aksen kecil dengan panah atas-bawah
                 let options = options();
                 let value = options.get(dword(key, *default) as usize).map_or("", |s| s.as_str());
-                let chip = [x1 - pad - g.width(value, &g.f.text).min(150.0) - 36.0, cy - 13.0, x1 - pad, cy + 13.0];
-                fill(chip, 8.0, WHITE, if over { 0.18 } else { 0.10 });
-                line(chip, 8.0, WHITE, 0.14);
-                g.text(value, &g.f.text, [chip[0] + 10.0, chip[1], chip[2] - 24.0, chip[3]], WHITE);
-                g.text("\u{E70D}", &g.f.icon_small, [chip[2] - 24.0, chip[1], chip[2] - 6.0, chip[3]], 0xc4c4cc);
+                let width = g.width(value, &g.f.text).min(170.0);
+                let knob = [x1 - pad - 18.0, cy - 10.0, x1 - pad, cy + 10.0];
+                if over {
+                    fill([knob[0] - width - 16.0, cy - 13.0, knob[2] + 4.0, cy + 13.0], 7.0, WHITE, 0.08);
+                }
+                g.text(value, &g.f.text, [knob[0] - width - 8.0, cy - 12.0, knob[0] - 6.0, cy + 12.0], 0xd8d8dc);
+                if active {
+                    g.rrect(knob, 5.0, ACCENT);
+                } else {
+                    fill(knob, 5.0, WHITE, 0.2);
+                }
+                let cx = (knob[0] + knob[2]) / 2.0;
+                g.poly(&[(cx - 3.2, cy - 2.2), (cx, cy - 6.0), (cx + 3.2, cy - 2.2)], WHITE);
+                g.poly(&[(cx - 3.2, cy + 2.2), (cx, cy + 6.0), (cx + 3.2, cy + 2.2)], WHITE);
             }
             Item::Text(key, text, secret_) => {
-                label(text, y + 11.0);
-                let field = [x0 + pad, y + h - 42.0, x1 - pad, y + h - 12.0];
+                label(text, y + 10.0);
+                let field = [x0 + pad, y + h - 40.0, x1 - pad, y + h - 12.0];
                 let over = hit(field, Hit::Text(i));
-                fill(field, 8.0, 0x000000, 0.30);
-                line(field, 8.0, if over { ACCENT } else { WHITE }, if over { 0.9 } else { 0.16 });
+                fill(field, 6.0, WHITE, 0.06);
+                line(field, 6.0, if over { ACCENT } else { WHITE }, if over { 0.9 } else { 0.13 });
                 // isi rahasia tidak perlu didekripsi hanya untuk ditampilkan sebagai titik-titik
                 let value = if *secret_ { bytes(key, RRF_RT_REG_BINARY).map_or(String::new(), |_| "\u{25CF}".repeat(12)) } else { string(key) };
-                let inner = [field[0] + 10.0, field[1], field[2] - 30.0, field[3]];
+                let inner = [field[0] + 9.0, field[1], field[2] - 9.0, field[3]];
                 if value.is_empty() {
-                    g.text("Klik untuk mengisi", &g.f.text, inner, GRAY);
+                    g.text("Click to edit", &g.f.text, inner, 0x76767c);
                 } else {
                     g.text(&value, &g.f.text, inner, WHITE);
                 }
-                g.text("\u{E70F}", &g.f.icon_small, [field[2] - 28.0, field[1], field[2] - 6.0, field[3]], GRAY);
             }
             Item::Note(_) => {}
         }
         y += h;
         if is_note(i + 1) {
-            y += 8.0;
+            y += 6.0;
         }
     }
     g.unclip();
@@ -413,11 +435,27 @@ fn draw(ui: &mut Ui) {
     let (content, view) = (y + scroll - VIEW.0 + 6.0, VIEW.1 - VIEW.0);
     if content > view {
         let top = VIEW.0 + scroll / content * view;
-        fill([W - 9.0, top, W - 6.0, top + view * view / content], 1.5, WHITE, 0.30);
+        fill([W - 9.0, top, W - 5.0, top + view * view / content], 2.0, WHITE, 0.3);
+    }
+
+    // lampu lalu lintas: tutup, kecilkan, dan tombol ketiga yang mati karena ukuran jendela tetap
+    for (k, (color, action)) in [(0xff5f57, Some(Hit::Close)), (0xfebc2e, Some(Hit::Minimize)), (0x4a4a4e, None)].into_iter().enumerate() {
+        let (cx, cy) = (22.0 + k as f32 * 20.0, BAR / 2.0);
+        g.rrect([cx - 6.0, cy - 6.0, cx + 6.0, cy + 6.0], 6.0, if active || lights_hot { color } else { 0x4a4a4e });
+        let Some(action) = action else { continue };
+        hit([cx - 8.0, cy - 8.0, cx + 8.0, cy + 8.0], action);
+        if lights_hot && action == Hit::Minimize {
+            g.rrect([cx - 3.2, cy - 0.7, cx + 3.2, cy + 0.7], 0.0, 0x7a4a00);
+        } else if lights_hot {
+            // tanda silang dari dua garis miring tipis
+            for s in [1.0, -1.0] {
+                g.poly(&[(cx - 2.8, cy - 2.0 * s), (cx - 2.0, cy - 2.8 * s), (cx + 2.8, cy + 2.0 * s), (cx + 2.0, cy + 2.8 * s)], 0x6e0a05);
+            }
+        }
     }
     // bingkai fokus untuk pemakaian keyboard
     if let Some((r, _)) = focus.and_then(|i| hits.get(i)) {
-        g.stroke([r[0] + 1.0, r[1] + 1.0, r[2] - 1.0, r[3] - 1.0], 9.0, ACCENT, 1.6);
+        g.stroke([r[0] + 1.0, r[1] + 1.0, r[2] - 1.0, r[3] - 1.0], 7.0, 0xb9a3ff, 1.6);
     }
     (ui.hits, ui.content) = (hits, content);
 }
@@ -431,8 +469,8 @@ fn changed() {
 
 fn hit_at(ui: &Ui, x: f32, y: f32) -> Option<usize> {
     // baris yang tergulir keluar area kanan tidak ikut terklik; yang digambar belakangan ada di atas
-    let visible = |h: &Hit| matches!(h, Hit::Section(_)) || (y >= VIEW.0 && y < VIEW.1);
-    ui.hits.iter().rposition(|(r, h)| x >= r[0] && x < r[2] && y >= r[1] && y < r[3] && visible(h))
+    let fixed = |h: &Hit| matches!(h, Hit::Section(_) | Hit::Close | Hit::Minimize);
+    ui.hits.iter().rposition(|(r, h)| x >= r[0] && x < r[2] && y >= r[1] && y < r[3] && (fixed(h) || (y >= VIEW.0 && y < VIEW.1)))
 }
 
 fn max_scroll(ui: &Ui) -> f32 {
@@ -450,6 +488,7 @@ fn activate(hwnd: HWND, hit: Hit, r: R) {
         let ui = ui.as_mut()?;
         let scale = ui.scale;
         let item = match hit {
+            Hit::Close | Hit::Minimize => return None,
             Hit::Section(i) => {
                 (ui.current, ui.scroll) = (i.min(ui.sections.len() - 1), 0.0);
                 return None;
@@ -482,8 +521,10 @@ fn activate(hwnd: HWND, hit: Hit, r: R) {
             let _ = ClientToScreen(hwnd, &mut p);
             p
         };
-        match follow {
-            Some((Follow::Menu(key, options, current), scale)) => {
+        match (hit, follow) {
+            (Hit::Close, _) => drop(PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))),
+            (Hit::Minimize, _) => drop(ShowWindow(hwnd, SW_MINIMIZE)),
+            (_, Some((Follow::Menu(key, options, current), scale))) => {
                 if let Ok(menu) = CreatePopupMenu() {
                     for (n, option) in options.iter().enumerate() {
                         let _ = AppendMenuW(menu, MF_STRING, n + 1, PCWSTR(wide(option).as_ptr()));
@@ -498,14 +539,14 @@ fn activate(hwnd: HWND, hit: Hit, r: R) {
                     }
                 }
             }
-            Some((Follow::Edit(i, value, secret_), scale)) => {
+            (_, Some((Follow::Edit(i, value, secret_), scale))) => {
                 let (a, b) = (screen(r[0], r[1], scale), screen(r[2], r[3], scale));
-                input::open(hwnd, i, RECT { left: a.x, top: a.y, right: b.x, bottom: b.y }, scale, &value, "Enter untuk menyimpan");
+                input::open(hwnd, i, RECT { left: a.x, top: a.y, right: b.x, bottom: b.y }, scale, &value, "");
                 if secret_ {
                     input::mask();
                 }
             }
-            None => {}
+            _ => {}
         }
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
@@ -540,7 +581,7 @@ fn key(hwnd: HWND, vk: VIRTUAL_KEY) {
         ui.focus = Some(next);
         // gulir supaya baris yang dipilih terlihat
         let (r, hit) = ui.hits[next];
-        if !matches!(hit, Hit::Section(_)) {
+        if matches!(hit, Hit::Toggle(_) | Hit::Choice(_) | Hit::Text(_) | Hit::Move(..)) {
             let shift = if r[3] > VIEW.1 { r[3] - VIEW.1 + 8.0 } else if r[1] < VIEW.0 { r[1] - VIEW.0 - 8.0 } else { 0.0 };
             ui.scroll = (ui.scroll + shift).clamp(0.0, max_scroll(ui));
         }
@@ -556,6 +597,29 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
     let point = |ui: &Ui| ((lp.0 & 0xffff) as i16 as f32 / ui.scale, ((lp.0 >> 16) & 0xffff) as i16 as f32 / ui.scale);
     unsafe {
         match msg {
+            // seluruh jendela menjadi area gambar: bingkai dan judul Windows tidak dipakai
+            WM_NCCALCSIZE if wp.0 != 0 => {}
+            // pita atas (di luar tombol) dipakai untuk menyeret jendela
+            WM_NCHITTEST => {
+                let mut p = POINT { x: (lp.0 & 0xffff) as i16 as i32, y: ((lp.0 >> 16) & 0xffff) as i16 as i32 };
+                let _ = ScreenToClient(hwnd, &mut p);
+                let bar = UI.with_borrow(|ui| {
+                    ui.as_ref().is_some_and(|ui| {
+                        let (x, y) = (p.x as f32 / ui.scale, p.y as f32 / ui.scale);
+                        y < BAR && hit_at(ui, x, y).is_none()
+                    })
+                });
+                return LRESULT(if bar { HTCAPTION } else { HTCLIENT } as isize);
+            }
+            WM_ACTIVATE => {
+                UI.with_borrow_mut(|ui| {
+                    if let Some(ui) = ui {
+                        ui.active = (wp.0 & 0xffff) != 0;
+                    }
+                });
+                redraw();
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
             // semua piksel digambar di WM_PAINT; menghapus dulu hanya membuat kedip
             WM_ERASEBKGND => return LRESULT(1),
             WM_PAINT => {

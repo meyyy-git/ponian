@@ -33,15 +33,15 @@ pub const ALL: [Page; 9] = [Page::Music, Page::Apps, Page::Timer, Page::Shelf, P
 impl Page {
     pub fn title(self) -> &'static str {
         match self {
-            Page::Music => "Musik",
-            Page::Apps => "Aplikasi",
+            Page::Music => "Music",
+            Page::Apps => "Apps",
             Page::Timer => "Timer",
             Page::Shelf => "Shelf",
             Page::Todo => "To-do",
-            Page::Calendar => "Kalender",
-            Page::Today => "Hari ini",
-            Page::Widgets => "Widget",
-            Page::Prayer => "Salat",
+            Page::Calendar => "Calendar",
+            Page::Today => "Today",
+            Page::Widgets => "Widgets",
+            Page::Prayer => "Prayer",
         }
     }
 

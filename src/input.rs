@@ -29,7 +29,11 @@ pub const TAB: isize = 2;
 pub const BLUR: isize = 3;
 
 const BG: COLORREF = COLORREF(0x00262626);
+/// warna aksen Ponian (urutan BGR): garis tepi kotak sebagai tanda fokus, seperti kolom teks macOS
+const RING: COLORREF = COLORREF(0x00f65c8b);
 const EM_SETCUEBANNER: u32 = 0x1501;
+/// lebar area petunjuk tombol "Enter" di kanan kotak, dalam DIP
+const HINT: f32 = 62.0;
 
 struct Input {
     popup: HWND,
@@ -38,6 +42,7 @@ struct Input {
     id: usize,
     brush: HBRUSH,
     font: HFONT,
+    scale: f32,
     /// jendela yang aktif sebelum kotak teks dibuka
     previous: HWND,
 }
@@ -80,7 +85,7 @@ pub fn open(owner: HWND, id: usize, rect: RECT, scale: f32, initial: &str, place
         let instance: HINSTANCE = module.into();
         let class = w!("PonianInput");
         let brush = CreateSolidBrush(BG);
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(popup_proc), hInstance: instance, lpszClassName: class, hbrBackground: brush, ..Default::default() });
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(popup_proc), hInstance: instance, lpszClassName: class, ..Default::default() });
         let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
         let Ok(popup) = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, class, w!(""), WS_POPUP, rect.left, rect.top, w, h, Some(owner), None, Some(instance), None)
         else {
@@ -88,7 +93,8 @@ pub fn open(owner: HWND, id: usize, rect: RECT, scale: f32, initial: &str, place
         };
         let round = DWMWCP_ROUND;
         let _ = DwmSetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as _, 4);
-        let pad = (10.0 * scale) as i32;
+        let _ = DwmSetWindowAttribute(popup, DWMWA_BORDER_COLOR, &RING as *const _ as _, 4);
+        let pad = (12.0 * scale) as i32;
         let font_h = (14.0 * scale) as i32;
         let initial_w: Vec<u16> = initial.encode_utf16().chain(Some(0)).collect();
         let Ok(edit) = CreateWindowExW(
@@ -98,7 +104,7 @@ pub fn open(owner: HWND, id: usize, rect: RECT, scale: f32, initial: &str, place
             WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
             pad,
             (h - font_h) / 2 - 2,
-            w - 2 * pad,
+            w - 2 * pad - (HINT * scale) as i32,
             font_h + 6,
             Some(popup),
             None,
@@ -112,10 +118,11 @@ pub fn open(owner: HWND, id: usize, rect: RECT, scale: f32, initial: &str, place
         SendMessageW(edit, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
         let cue: Vec<u16> = placeholder.encode_utf16().chain(Some(0)).collect();
         SendMessageW(edit, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(cue.as_ptr() as isize)));
-        SendMessageW(edit, EM_SETSEL, Some(WPARAM(initial.len())), Some(LPARAM(initial.len() as isize)));
+        // isi lama terpilih semua: mengetik langsung menggantinya, tombol panah membatalkan pilihan
+        SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
         let _ = SetWindowSubclass(edit, Some(edit_proc), 1, 0);
         let previous = GetForegroundWindow();
-        INPUT.set(Some(Input { popup, edit, owner, id, brush, font, previous }));
+        INPUT.set(Some(Input { popup, edit, owner, id, brush, font, scale, previous }));
         let _ = ShowWindow(popup, SW_SHOW);
         // Windows bisa menolak SetForegroundWindow dari app yang tidak aktif; kalau ditolak, menumpang
         // antrean input app yang sedang aktif sebentar membuat perpindahan fokus diizinkan.
@@ -179,6 +186,31 @@ extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _: us
 extern "system" fn popup_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            // petunjuk di kanan kotak: tombol "Enter" untuk menyimpan
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let dc = BeginPaint(hwnd, &mut ps);
+                if let Some((font, scale, brush)) = INPUT.with_borrow(|i| i.as_ref().map(|i| (i.font, i.scale, i.brush))) {
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    // latar digambar di sini, bukan lewat kuas kelas: kuas kelas ikut terhapus saat kotak ditutup
+                    FillRect(dc, &rc, brush);
+                    let px = |v: f32| (v * scale) as i32;
+                    let mut key = RECT { left: rc.right - px(HINT - 4.0), top: (rc.bottom - px(20.0)) / 2, right: rc.right - px(10.0), bottom: (rc.bottom + px(20.0)) / 2 };
+                    let pen = CreatePen(PS_SOLID, 1, COLORREF(0x00585858));
+                    let old = (SelectObject(dc, pen.into()), SelectObject(dc, GetStockObject(NULL_BRUSH)), SelectObject(dc, font.into()));
+                    let _ = RoundRect(dc, key.left, key.top, key.right, key.bottom, px(8.0), px(8.0));
+                    SetBkMode(dc, TRANSPARENT);
+                    SetTextColor(dc, COLORREF(0x00a8a8a8));
+                    let mut text: Vec<u16> = "Enter".encode_utf16().collect();
+                    DrawTextW(dc, &mut text, &mut key, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    (SelectObject(dc, old.0), SelectObject(dc, old.1), SelectObject(dc, old.2));
+                    let _ = DeleteObject(pen.into());
+                }
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            WM_ERASEBKGND => LRESULT(1),
             WM_CTLCOLOREDIT => {
                 let dc = HDC(wp.0 as _);
                 SetTextColor(dc, COLORREF(0x00ffffff));

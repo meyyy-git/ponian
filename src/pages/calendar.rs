@@ -5,8 +5,8 @@ use crate::{
     state,
 };
 
-const MONTHS: [&str; 12] = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
-const INITIALS: [&str; 7] = ["M", "S", "S", "R", "K", "J", "S"];
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const INITIALS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
 
 /// (tahun, bulan 1..=12) yang berjarak `offset` bulan dari bulan pada hari `today`.
 pub fn month_at(today: i64, offset: i32) -> (i64, u32) {
@@ -33,7 +33,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     g.text(&format!("{} {y}", MONTHS[m as usize - 1]), &g.f.bold, [l, t - 2.0, l + 122.0, t + 18.0], WHITE);
     chip(g, [l, t + 22.0, l + 26.0, t + 44.0], "\u{2039}", CHIP, buttons, Action::CalMove(-1));
     chip(g, [l + 30.0, t + 22.0, l + 56.0, t + 44.0], "\u{203A}", CHIP, buttons, Action::CalMove(1));
-    chip(g, [l + 60.0, t + 22.0, l + 96.0, t + 44.0], "Kini", CHIP, buttons, Action::CalToday);
+    chip(g, [l + 60.0, t + 22.0, l + 96.0, t + 44.0], "Now", CHIP, buttons, Action::CalToday);
     chip(g, [l + 100.0, t + 22.0, l + 122.0, t + 44.0], "+", CHIP, buttons, Action::CalAdd);
     let (sy, sm, sd) = clock::civil_from_days(selected);
     g.text(&state::date_id(clock::weekday(selected) as u16, sd as u16, sm as u16, sy as u16), &g.f.small, [l, t + 50.0, l + 120.0, t + 66.0], GRAY);
@@ -41,7 +41,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     let mut list: Vec<String> = calendar::on(&events, selected).iter().map(|e| e.min.map_or(e.title.clone(), |min| format!("{} {}", clock::hhmm(min), e.title))).collect();
     list.extend(app.tasks.iter().filter(|t| t.day == selected && !t.done).map(|t| t.time.map_or(t.title.clone(), |min| format!("{} {}", clock::hhmm(min), t.title))));
     if list.is_empty() {
-        g.text("Tidak ada acara", &g.f.small, [l, t + 66.0, l + 120.0, t + 82.0], GRAY);
+        g.text("No events", &g.f.small, [l, t + 66.0, l + 120.0, t + 82.0], GRAY);
     }
     for (row, label) in list.iter().take(2).enumerate() {
         let y = t + 66.0 + row as f32 * 17.0;

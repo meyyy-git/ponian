@@ -82,6 +82,8 @@ const EXPANDED: (f32, f32) = (396.0, 171.0);
 const PEEK: (f32, f32) = (8.0, 3.0);
 /// Pill lirik saat musik berjalan.
 const LYRIC: (f32, f32) = (300.0, 34.0);
+/// Lebar pill lirik mengikuti panjang barisnya, di antara dua batas ini.
+const LYRIC_W: (f32, f32) = (150.0, 400.0);
 const HUD_MS: u32 = 3000;
 const HOVER_MS: u32 = 240;
 const FADE_SECS: f32 = 0.22;
@@ -226,6 +228,8 @@ pub struct App {
     lyric_cur: String,
     lyric_prev: String,
     lyric_since: Option<Instant>,
+    /// lebar pill untuk baris lirik yang sedang tampil
+    lyric_w: f32,
     brightness_ready: bool,
     layout: (isize, isize),
     battery_band: u8,
@@ -303,7 +307,7 @@ impl App {
         match view {
             View::Hidden => (IDLE.0, 0.0),
             View::Idle => (IDLE.0 + peek.0, IDLE.1 + peek.1),
-            View::Compact => (LYRIC.0 + peek.0, LYRIC.1 + peek.1),
+            View::Compact => (self.lyric_w + peek.0, LYRIC.1 + peek.1),
             View::Hud if matches!(self.hud, Some(Hud::Alert | Hud::Info)) => (380.0, 38.0),
             View::Hud if matches!(self.hud, Some(Hud::Caps(_) | Hud::Lang(_))) => (220.0, 34.0),
             View::Hud if matches!(self.hud, Some(Hud::Volume | Hud::Brightness(_))) => (320.0, 35.0),
@@ -459,9 +463,16 @@ impl App {
         let text = idx.map(|i| lines[i].1.as_str()).filter(|s| !s.is_empty()).unwrap_or(&m.title).to_string();
         if idx != self.lyric_idx || text != self.lyric_cur {
             self.lyric_idx = idx;
+            // pill mengikuti panjang baris: 40 untuk ikon di kiri, 22 ruang kanan, 12 kelonggaran
+            self.lyric_w = (self.gfx.width(&text, &self.gfx.f.cbold) + 74.0).clamp(LYRIC_W.0, LYRIC_W.1);
             let prev = std::mem::replace(&mut self.lyric_cur, text);
             if self.view == View::Compact && !prev.is_empty() {
                 (self.lyric_prev, self.lyric_since) = (prev, Some(Instant::now()));
+            }
+            // lebar tujuan berubah: pegas dimulai lagi dari ukuran pill saat ini
+            let to = self.target(self.view);
+            if to != self.to {
+                (self.from, self.to, self.fade, self.anim_start) = (self.cur, to, false, Some(Instant::now()));
             }
         }
         match lines.get(idx.map_or(0, |i| i + 1)) {
@@ -511,19 +522,26 @@ impl App {
             }
             // pill lirik: baris yang sedang dinyanyikan, dengan pendar warna cover
             View::Compact => {
-                g.text(NOTE, &g.f.icon, [x0 + 12.0, 0.0, x0 + 38.0, h], tint);
+                // lebar pill berubah mengikuti baris lirik: ikon menempel di tepi pill yang sedang bergerak,
+                // teks ditata menurut lebar tujuan dan dipotong di tepi pill saat ini
+                let (e0, e1) = (cx - self.cur.0 / 2.0, cx + self.cur.0 / 2.0);
+                g.text(NOTE, &g.f.icon, [e0 + 12.0, 0.0, e0 + 38.0, h], tint);
                 let (l, r) = (x0 + 40.0, x1 - 22.0);
                 let cur = if self.lyric_cur.is_empty() { &m.title } else { &self.lyric_cur };
                 // baris lama naik sambil memudar, baris baru naik dari bawah sambil muncul
                 let e = self.lyric_since.map_or(1.0, |s| 1.0 - (1.0 - (s.elapsed().as_secs_f32() / LYRIC_SECS).min(1.0)).powi(3));
                 let (k, shift) = (g.alpha.get(), h * 0.5);
+                g.clip([e0 + 38.0, -h, e1 - 12.0, h * 2.0]);
                 if e < 1.0 {
+                    // baris lama tetap selebar pill lamanya supaya tidak mendadak terpotong elipsis
+                    let (mid, half) = ((l + r) / 2.0, (self.from.0 - 62.0).max(r - l) / 2.0);
                     g.alpha.set(k * (1.0 - e).powi(2));
-                    g.text(&self.lyric_prev, &g.f.cbold, [l, -shift * e, r, h - shift * e], WHITE);
+                    g.text(&self.lyric_prev, &g.f.cbold, [mid - half, -shift * e, mid + half, h - shift * e], WHITE);
                 }
                 g.alpha.set(k * e);
                 g.text(cur, &g.f.cbold, [l, shift * (1.0 - e), r, h + shift * (1.0 - e)], WHITE);
                 g.alpha.set(k);
+                g.unclip();
             }
             View::Hud => match self.hud {
                 Some(Hud::Volume) => {
@@ -533,7 +551,7 @@ impl App {
                 }
                 Some(Hud::Power(plugged, pct)) => {
                     battery_ring(g, x0 + 22.0, h / 2.0, 8.0, plugged, pct);
-                    let label = if plugged { "Mengisi daya" } else { "Memakai baterai" };
+                    let label = if plugged { "Charging" } else { "On battery" };
                     g.text(&format!("{label} \u{B7} {pct}%"), &g.f.text, [x0 + 40.0, 0.0, x1 - 14.0, h], WHITE);
                 }
                 Some(Hud::Track) => {
@@ -544,7 +562,7 @@ impl App {
                 Some(Hud::Brightness(pct)) => level("\u{E706}", pct as f32 / 100.0),
                 Some(Hud::Caps(on)) => {
                     g.text("\u{E84A}", &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], if on { ACCENT } else { GRAY });
-                    g.text(if on { "Caps Lock nyala" } else { "Caps Lock mati" }, &g.f.text, [x0 + 44.0, 0.0, x1 - 12.0, h], WHITE);
+                    g.text(if on { "Caps Lock on" } else { "Caps Lock off" }, &g.f.text, [x0 + 44.0, 0.0, x1 - 12.0, h], WHITE);
                 }
                 Some(Hud::Lang(layout)) => {
                     g.text("\u{E8C1}", &g.f.icon, [x0 + 12.0, 0.0, x0 + 40.0, h], ACCENT);
@@ -562,7 +580,7 @@ impl App {
                     g.text(&a.text, &g.f.text, [x0 + 44.0, 0.0, x1 - right, h], WHITE);
                     if a.task.is_some() {
                         let snooze = self.snooze;
-                        pages::chip(g, [x1 - 94.0, 7.0, x1 - 12.0, h - 7.0], &format!("Tunda {snooze} mnt"), CHIP, buttons, Action::Snooze);
+                        pages::chip(g, [x1 - 94.0, 7.0, x1 - 12.0, h - 7.0], &format!("Snooze {snooze} min"), CHIP, buttons, Action::Snooze);
                     }
                 }
                 None => {}
@@ -709,7 +727,7 @@ impl App {
     fn hotkeys(&mut self) {
         let failed = register_hotkeys(self.hwnd);
         if !failed.is_empty() {
-            self.info("\u{E765}", format!("{} dipakai app lain \u{B7} matikan di Pengaturan", failed.join(" & ")), 6000);
+            self.info("\u{E765}", format!("{} is used by another app \u{B7} turn it off in Settings", failed.join(" & ")), 6000);
         }
     }
 
@@ -955,7 +973,7 @@ fn battery_ring(g: &Gfx, cx: f32, cy: f32, rad: f32, plugged: bool, pct: u8) {
 fn app_menu(hwnd: HWND) -> i32 {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return 0 };
-        for (id, label) in [(1usize, w!("Ganti nama\u{2026}")), (2, w!("Geser ke kiri")), (3, w!("Geser ke kanan")), (4, w!("Hapus"))] {
+        for (id, label) in [(1usize, w!("Rename\u{2026}")), (2, w!("Move left")), (3, w!("Move right")), (4, w!("Remove"))] {
             let _ = AppendMenuW(menu, MF_STRING, id, label);
         }
         let mut p = POINT::default();
@@ -1024,123 +1042,123 @@ fn monitors() -> Vec<(HMONITOR, RECT, bool)> {
 fn sections() -> Vec<Section> {
     // halaman dulu (indeksnya dipakai tombol naik/turun), keterangan di akhir
     let mut page_items: Vec<Item> = pages::ordered().into_iter().map(|p| Item::Movable(p.key(), p.title(), true, pages::move_page)).collect();
-    page_items.push(Item::Note("Sakelar menampilkan atau menyembunyikan halaman; tombol panah mengubah urutannya di notch."));
+    page_items.push(Item::Note("Switches show or hide a page; the arrow buttons change its order in the notch."));
     vec![
         Section {
-            name: "Umum", icon: "\u{E713}",
+            name: "General", icon: "\u{E713}",
             items: vec![
-                Item::Check(settings::AUTOSTART, "Jalankan saat Windows menyala", false),
-                Item::Check("HideFullscreen", "Sembunyikan saat ada app layar penuh (game, video, presentasi)", true),
-                Item::Check("HideNotch", "Sembunyikan notch", false),
+                Item::Check(settings::AUTOSTART, "Launch at Windows startup", false),
+                Item::Check("HideFullscreen", "Hide when an app is full screen (games, video, presentations)", true),
+                Item::Check("HideNotch", "Hide notch", false),
             ],
         },
         Section {
-            name: "Tampilan", icon: "\u{E771}",
+            name: "Appearance", icon: "\u{E771}",
             items: vec![
-                Item::Choice("Size", "Ukuran notch", || opts(&["Kecil", "Sedang", "Besar", "Sangat besar"]), 1),
+                Item::Choice("Size", "Notch size", || opts(&["Small", "Medium", "Large", "Extra large"]), 1),
                 Item::Choice(
                     "Monitor",
-                    "Layar",
-                    || monitors().iter().enumerate().map(|(i, m)| format!("Layar {}{}", i + 1, if m.2 { " (utama)" } else { "" })).collect(),
+                    "Display",
+                    || monitors().iter().enumerate().map(|(i, m)| format!("Display {}{}", i + 1, if m.2 { " (main)" } else { "" })).collect(),
                     0,
                 ),
             ],
         },
         Section {
-            name: "Musik", icon: "\u{E8D6}",
+            name: "Music", icon: "\u{E8D6}",
             items: vec![
-                Item::Check("ShowLyrics", "Tampilkan lirik", true),
-                Item::Note("Lirik diambil dari LRCLIB (lrclib.net). Judul dan artis lagu dikirim ke sana."),
-                Item::Choice("LyricOffset", "Majukan lirik", || opts(&["Mati", "0,3 detik", "0,6 detik", "1 detik"]), 0),
+                Item::Check("ShowLyrics", "Show lyrics", true),
+                Item::Note("Lyrics come from LRCLIB (lrclib.net). The song title and artist are sent there."),
+                Item::Choice("LyricOffset", "Show lyrics early", || opts(&["Off", "0.3 seconds", "0.6 seconds", "1 second"]), 0),
             ],
         },
-        Section { name: "Halaman", icon: "\u{E7C3}", items: page_items },
+        Section { name: "Pages", icon: "\u{E7C3}", items: page_items },
         Section {
             name: "Timer", icon: "\u{E916}",
             items: vec![
-                Item::Check("Sound", "Bunyi saat timer habis dan untuk semua pengingat", true),
-                Item::Note("Durasi timer dipilih langsung di halaman Timer."),
+                Item::Check("Sound", "Play a sound when the timer ends and for all reminders", true),
+                Item::Note("Choose the timer duration on the Timer page."),
             ],
         },
         Section {
             name: "To-do", icon: "\u{E9D5}",
             items: vec![
-                Item::Note("Tulis jam di awal atau akhir tugas untuk pengingat, misalnya \u{201C}Rapat 14:30\u{201D}."),
-                Item::Check("Todo.Remind", "Ingatkan saat jam tugas tiba", true),
-                Item::Choice("Todo.Snooze", "Tunda pengingat selama", || opts(&["5 menit", "10 menit", "15 menit"]), 1),
+                Item::Note("Add a time at the start or end of a task to get a reminder, for example \u{201C}Meeting 14:30\u{201D}."),
+                Item::Check("Todo.Remind", "Remind me when a task is due", true),
+                Item::Choice("Todo.Snooze", "Snooze reminders for", || opts(&["5 minutes", "10 minutes", "15 minutes"]), 1),
             ],
         },
         Section {
-            name: "Salat", icon: "\u{E708}",
+            name: "Prayer", icon: "\u{E708}",
             items: vec![
-                Item::Choice("Prayer.Method", "Metode perhitungan", || prayer::METHODS.iter().map(|m| m.name.to_string()).collect(), 0),
-                Item::Check("Prayer.Hanafi", "Asar mazhab Hanafi (bayangan dua kali panjang benda)", false),
-                Item::Check("UseWindowsLocation", "Pakai lokasi Windows (perlu izin lokasi di Pengaturan Windows)", true),
-                Item::Text("Location", "Atau tulis koordinat sendiri: lintang, bujur (contoh: -6.2088, 106.8456)", false),
-                Item::Choice("Prayer.Notify", "Pengingat", || opts(&["Mati", "Saat waktu salat", "10 menit sebelumnya"]), 1),
-                Item::Check("Prayer.Pause", "Jeda musik saat waktu salat", false),
-                Item::Note("Jadwal dihitung di komputer ini dari posisi matahari, tanpa internet."),
+                Item::Choice("Prayer.Method", "Calculation method", || prayer::METHODS.iter().map(|m| m.name.to_string()).collect(), 0),
+                Item::Check("Prayer.Hanafi", "Hanafi Asr (shadow twice the length of the object)", false),
+                Item::Check("UseWindowsLocation", "Use Windows location (needs location permission in Windows Settings)", true),
+                Item::Text("Location", "Or enter coordinates yourself: latitude, longitude (example: -6.2088, 106.8456)", false),
+                Item::Choice("Prayer.Notify", "Reminder", || opts(&["Off", "At prayer time", "10 minutes before"]), 1),
+                Item::Check("Prayer.Pause", "Pause music at prayer time", false),
+                Item::Note("Times are calculated on this computer from the position of the sun, without internet."),
             ],
         },
         Section {
-            name: "Sistem", icon: "\u{E7F4}",
+            name: "System", icon: "\u{E7F4}",
             items: vec![
-                Item::Note("Indikator yang muncul di notch:"),
+                Item::Note("Indicators shown in the notch:"),
                 Item::Check("Hud.Volume", "Volume", true),
-                Item::Check("Hud.Brightness", "Kecerahan layar", true),
+                Item::Check("Hud.Brightness", "Screen brightness", true),
                 Item::Check("Hud.Caps", "Caps Lock", true),
-                Item::Check("Hud.Lang", "Bahasa input", true),
-                Item::Note("Popup:"),
-                Item::Check("Popup.Battery", "Baterai lemah, kritis, dan penuh", true),
-                Item::Check("Popup.Wifi", "Wi-Fi tersambung atau terputus", true),
-                Item::Check("Popup.Audio", "Perangkat audio berganti (headset Bluetooth, speaker)", true),
+                Item::Check("Hud.Lang", "Input language", true),
+                Item::Note("Pop-ups:"),
+                Item::Check("Popup.Battery", "Battery low, critical, and full", true),
+                Item::Check("Popup.Wifi", "Wi-Fi connected or disconnected", true),
+                Item::Check("Popup.Audio", "Audio device changed (Bluetooth headset, speakers)", true),
             ],
         },
         Section {
-            name: "Notifikasi", icon: "\u{EA8F}",
+            name: "Notifications", icon: "\u{EA8F}",
             items: vec![
-                Item::Check("Notify.On", "Tampilkan notifikasi app di notch", true),
-                Item::Check("Notify.Preview", "Tampilkan isi pesan", false),
-                Item::Text("Notify.Mute", "Jangan tampilkan notifikasi dari (nama app, pisahkan dengan koma)", false),
-                Item::Note("Klik notifikasi di notch untuk membuka app pengirimnya. Kalau isi pesan dimatikan, notch hanya menampilkan nama app. Notifikasi dibaca di komputer ini dan tidak dikirim ke mana pun."),
+                Item::Check("Notify.On", "Show app notifications in the notch", true),
+                Item::Check("Notify.Preview", "Show message content", false),
+                Item::Text("Notify.Mute", "Don\u{2019}t show notifications from (app names, separated by commas)", false),
+                Item::Note("Click a notification in the notch to open the app that sent it. When message content is off, the notch shows only the app name. Notifications are read on this computer and are not sent anywhere."),
             ],
         },
         Section {
             name: "Shelf", icon: "\u{E896}",
             items: vec![
-                Item::Check("Shelf.Clear", "Kosongkan Shelf setiap Ponian dibuka", true),
-                Item::Check("Clip.On", "Simpan riwayat clipboard (teks, gambar, dan file yang Anda salin)", true),
-                Item::Choice("Clip.Limit", "Jumlah riwayat clipboard", || opts(&["5", "10", "20", "50"]), 1),
-                Item::Check("Clip.Keep", "Ingat riwayat clipboard setelah Ponian ditutup", false),
-                Item::Note("Teks dari password manager yang menandai isinya rahasia tidak ikut disimpan."),
+                Item::Check("Shelf.Clear", "Clear the Shelf each time Ponian opens", true),
+                Item::Check("Clip.On", "Keep clipboard history (text, images, and files you copy)", true),
+                Item::Choice("Clip.Limit", "Clipboard history size", || opts(&["5", "10", "20", "50"]), 1),
+                Item::Check("Clip.Keep", "Remember clipboard history after Ponian closes", false),
+                Item::Note("Text that a password manager marks as secret is not saved."),
             ],
         },
         Section {
-            name: "Salin teks layar", icon: "\u{E8C8}",
+            name: "Screen text", icon: "\u{E8C8}",
             items: vec![
-                Item::Check("Ocr.On", "Salin teks dari layar (OCR) dengan Ctrl+Alt+T: pilih area, teksnya disalin", true),
-                Item::Note("OCR memakai mesin bawaan Windows dan berjalan offline."),
+                Item::Check("Ocr.On", "Copy text from the screen (OCR) with Ctrl+Alt+T: select an area and its text is copied", true),
+                Item::Note("OCR uses the engine built into Windows and works offline."),
             ],
         },
         Section {
             name: "Internet", icon: "\u{E774}",
             items: vec![
-                Item::Check("Weather.On", "Cuaca (data MET Norway, memakai lokasi dari bagian Salat)", true),
-                Item::Check("Rates.On", "Kurs mata uang (data Bank Sentral Eropa lewat Frankfurter)", true),
-                Item::Choice("Rates.Main", "Mata uang utama", || currency::MAIN.iter().map(|c| c.to_string()).collect(), 0),
-                Item::Text("Calendar", "Link iCal rahasia (Google Calendar: Setelan \u{203A} Alamat rahasia dalam format iCal)", true),
-                Item::Note("Link kalender disimpan terenkripsi. Acaranya tampil di halaman Kalender dan To-do; tanpa link, Kalender tetap bisa dipakai."),
-                Item::Choice("Calendar.WeekStart", "Minggu dimulai hari", || opts(&["Senin", "Minggu"]), 0),
+                Item::Check("Weather.On", "Weather (MET Norway data, uses the location from the Prayer section)", true),
+                Item::Check("Rates.On", "Exchange rates (European Central Bank data via Frankfurter)", true),
+                Item::Choice("Rates.Main", "Main currency", || currency::MAIN.iter().map(|c| c.to_string()).collect(), 0),
+                Item::Text("Calendar", "Secret iCal link (Google Calendar: Settings \u{203A} Secret address in iCal format)", true),
+                Item::Note("The calendar link is stored encrypted. Its events appear on the Calendar and To-do pages; Calendar still works without a link."),
+                Item::Choice("Calendar.WeekStart", "Week starts on", || opts(&["Monday", "Sunday"]), 0),
             ],
         },
         Section {
-            name: "Widget", icon: "\u{E8A9}",
+            name: "Widgets", icon: "\u{E8A9}",
             items: vec![
-                Item::Choice("Widget.Left", "Widget kiri", pages::widgets::names, 0),
-                Item::Choice("Widget.Right", "Widget kanan", pages::widgets::names, 1),
-                Item::Choice("Clock.City1", "Jam dunia, kota pertama", worldclock::names, 5),
-                Item::Choice("Clock.City2", "Jam dunia, kota kedua", worldclock::names, 10),
-                Item::Text("Countdown", "Hitung mundur: tanggal dan nama acara (contoh: 2027-01-17 Ulang tahun). Kosongkan untuk hari besar terdekat.", false),
+                Item::Choice("Widget.Left", "Left widget", pages::widgets::names, 0),
+                Item::Choice("Widget.Right", "Right widget", pages::widgets::names, 1),
+                Item::Choice("Clock.City1", "World clock, first city", worldclock::names, 5),
+                Item::Choice("Clock.City2", "World clock, second city", worldclock::names, 10),
+                Item::Text("Countdown", "Countdown: date and event name (example: 2027-01-17 Birthday). Leave empty for the nearest holiday.", false),
             ],
         },
     ]
@@ -1305,6 +1323,7 @@ fn main() -> Result<()> {
             lyric_cur: String::new(),
             lyric_prev: String::new(),
             lyric_since: None,
+            lyric_w: LYRIC.0,
             brightness_ready: false,
             layout: (0, 0),
             battery_band: 0,

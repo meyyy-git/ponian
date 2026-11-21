@@ -9,6 +9,18 @@ pub const CMD_SETTINGS: i32 = 1;
 pub const CMD_HIDE: i32 = 2;
 pub const CMD_QUIT: i32 = 3;
 
+/// Ikon aplikasi (resource nomor 1) dalam ukuran ikon kecil layar ini; ikon bawaan Windows kalau gagal.
+fn icon() -> HICON {
+    unsafe {
+        let module = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap_or_default();
+        let side = GetSystemMetrics(SM_CXSMICON);
+        match LoadImageW(Some(module.into()), PCWSTR(1 as _), IMAGE_ICON, side, side, LR_SHARED) {
+            Ok(handle) => HICON(handle.0),
+            Err(_) => LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
+        }
+    }
+}
+
 fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     let mut d = NOTIFYICONDATAW {
         cbSize: size_of::<NOTIFYICONDATAW>() as u32,
@@ -16,7 +28,7 @@ fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
         uID: 1,
         uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
         uCallbackMessage: WM_APP_TRAY,
-        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default(),
+        hIcon: icon(),
         ..Default::default()
     };
     for (dst, src) in d.szTip.iter_mut().zip("Ponian".encode_utf16()) {
@@ -37,10 +49,10 @@ pub fn remove(hwnd: HWND) {
 pub fn menu(hwnd: HWND, hidden: bool) -> i32 {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return 0 };
-        let _ = AppendMenuW(menu, MF_STRING, CMD_SETTINGS as usize, w!("Pengaturan\u{2026}"));
-        let _ = AppendMenuW(menu, MF_STRING | if hidden { MF_CHECKED } else { MF_UNCHECKED }, CMD_HIDE as usize, w!("Sembunyikan notch"));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_SETTINGS as usize, w!("Settings\u{2026}"));
+        let _ = AppendMenuW(menu, MF_STRING | if hidden { MF_CHECKED } else { MF_UNCHECKED }, CMD_HIDE as usize, w!("Hide notch"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-        let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT as usize, w!("Keluar"));
+        let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT as usize, w!("Quit Ponian"));
         let mut p = POINT::default();
         let _ = GetCursorPos(&mut p);
         // tanpa ini menu tidak menutup saat user klik di luar

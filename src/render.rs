@@ -128,7 +128,7 @@ impl Gfx {
                 icon_small: font(mdl, 9.5, normal, center)?,
                 icon_mid: font(mdl, 12.5, normal, center)?,
                 icon_big: font(mdl, 24.0, normal, center)?,
-                title: font(ui, 19.0, semi, left)?,
+                title: font(ui, 16.0, semi, left)?,
                 wrap: font(ui, 12.5, normal, left)?,
             };
             f.wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
@@ -203,18 +203,6 @@ impl Gfx {
     pub fn stroke(&self, r: R, radius: f32, rgb: u32, width: f32) {
         self.color(rgb);
         unsafe { self.rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(r), radiusX: radius, radiusY: radius }, &self.brush, width, NO_STYLE) }
-    }
-
-    /// Bulatan warna yang memudar ke tepi (hiasan latar kaca).
-    pub fn blob(&self, cx: f32, cy: f32, rad: f32, rgb: u32, a: f32) {
-        unsafe {
-            let stops = [D2D1_GRADIENT_STOP { position: 0.0, color: self.rgba(rgb, a) }, D2D1_GRADIENT_STOP { position: 1.0, color: self.rgba(rgb, 0.0) }];
-            let Ok(collection) = self.rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) else { return };
-            let center = Vector2 { X: cx, Y: cy };
-            let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES { center, gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 }, radiusX: rad, radiusY: rad };
-            let Ok(brush) = self.rt.CreateRadialGradientBrush(&props, None, &collection) else { return };
-            self.rt.FillEllipse(&D2D1_ELLIPSE { point: center, radiusX: rad, radiusY: rad }, &brush);
-        }
     }
 
     /// Tinggi teks dalam DIP kalau dibungkus selebar `width` (untuk format yang boleh turun baris).

@@ -9,7 +9,7 @@ const ROWS: usize = 3;
 pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>) {
     // tab File dan Clipboard
     let mut x = l;
-    for (tab, name, count) in [(0u8, "File", app.files.len()), (1, "Clipboard", app.clips.len())] {
+    for (tab, name, count) in [(0u8, "Files", app.files.len()), (1, "Clipboard", app.clips.len())] {
         let label = if count > 0 { format!("{name} {count}") } else { name.to_string() };
         let w = g.width(&label, &g.f.small) + 4.0;
         let active = app.shelf_tab == tab && !app.dragging;
@@ -31,10 +31,10 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>)
     };
 
     if app.dragging {
-        empty("\u{E896}", "Lepas untuk menambahkan", "File tetap di tempat asalnya", ACCENT);
+        empty("\u{E896}", "Release to add", "Files stay where they are", ACCENT);
     } else if app.shelf_tab == 0 {
         if app.files.is_empty() {
-            return empty("\u{E896}", "Jatuhkan file di sini", "Seret keluar kapan saja \u{B7} klik untuk membuka", DIM);
+            return empty("\u{E896}", "Drop files here", "Drag out anytime \u{B7} click to open", DIM);
         }
         for (row, path) in app.files.iter().take(ROWS).enumerate() {
             let y = zone[1] + row as f32 * 26.0;
@@ -50,7 +50,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>)
         more(g, app.files.len(), [l, b - 4.0, r, b + 10.0]);
     } else {
         if app.clips.is_empty() {
-            return empty("\u{E8C8}", "Salin teks, gambar, atau file", "Nanti menunggu di sini, siap ditempel lagi", DIM);
+            return empty("\u{E8C8}", "Copy text, images, or files", "They wait here, ready to paste again", DIM);
         }
         for (row, clip) in app.clips.iter().take(ROWS).enumerate() {
             let y = zone[1] + row as f32 * 26.0;
@@ -69,6 +69,6 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, b]: R, buttons: &mut Vec<(R, Action)>)
 
 fn more(g: &Gfx, total: usize, r: R) {
     if total > ROWS {
-        g.text(&format!("+{} lagi", total - ROWS), &g.f.rsmall, r, GRAY);
+        g.text(&format!("+{} more", total - ROWS), &g.f.rsmall, r, GRAY);
     }
 }

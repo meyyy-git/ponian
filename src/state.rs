@@ -55,8 +55,8 @@ pub fn spring(t: f32) -> f32 {
     1.0 - decay * ((wd * t).cos() + ZETA / (1.0 - ZETA * ZETA).sqrt() * (wd * t).sin())
 }
 
-const DAYS: [&str; 7] = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /// `dow` 0 = Minggu, `month` 1..=12, sesuai SYSTEMTIME.
 pub fn date_id(dow: u16, day: u16, month: u16, year: u16) -> String {
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn indonesian_date() {
-        assert_eq!(date_id(6, 21, 11, 2026), "Sab 21 Nov 2026");
-        assert_eq!(date_id(0, 1, 5, 2027), "Min 1 Mei 2027");
+        assert_eq!(date_id(6, 21, 11, 2026), "Sat 21 Nov 2026");
+        assert_eq!(date_id(0, 1, 5, 2027), "Sun 1 May 2027");
     }
 }

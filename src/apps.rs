@@ -94,10 +94,10 @@ pub fn pick(owner: HWND) -> Option<String> {
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: owner,
-        lpstrFilter: w!("Aplikasi dan pintasan\0*.exe;*.lnk;*.url\0Semua file\0*.*\0"),
+        lpstrFilter: w!("Apps and shortcuts\0*.exe;*.lnk;*.url\0All files\0*.*\0"),
         lpstrFile: PWSTR(file.as_mut_ptr()),
         nMaxFile: file.len() as u32,
-        lpstrTitle: w!("Pilih aplikasi untuk Ponian"),
+        lpstrTitle: w!("Choose an app for Ponian"),
         // pintasan (.lnk) disimpan apa adanya, tidak diganti dengan file tujuannya
         Flags: OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NODEREFERENCELINKS,
         ..Default::default()

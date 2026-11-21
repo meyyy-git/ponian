@@ -33,13 +33,13 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
         g.dashed(icon, 9.0, DIM);
         g.text("\u{E710}", &g.f.icon_small, icon, GRAY);
         if roomy {
-            g.text("Tambah", &g.f.csmall, label, GRAY);
+            g.text("Add",&g.f.csmall, label, GRAY);
         }
         buttons.push((hit, Action::AppAdd));
     }
     if app.apps.is_empty() {
-        g.text("Tambah aplikasi favorit Anda", &g.f.text, [l + cw + 8.0, t + 4.0, r, t + 24.0], WHITE);
-        g.text("Klik + atau seret file .exe / pintasan ke sini.", &g.f.small, [l + cw + 8.0, t + 22.0, r, t + 38.0], GRAY);
-        g.text("Klik kanan ikon untuk mengatur atau menghapusnya.", &g.f.small, [l + cw + 8.0, t + 37.0, r, t + 53.0], GRAY);
+        g.text("Add your favorite apps", &g.f.text, [l + cw + 8.0, t + 4.0, r, t + 24.0], WHITE);
+        g.text("Click + or drag an .exe file or shortcut here.", &g.f.small, [l + cw + 8.0, t + 22.0, r, t + 38.0], GRAY);
+        g.text("Right-click an icon to rename, move, or remove it.", &g.f.small, [l + cw + 8.0, t + 37.0, r, t + 53.0], GRAY);
     }
 }

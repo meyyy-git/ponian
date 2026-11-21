@@ -12,12 +12,12 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     let done = tasks.iter().filter(|t| t.done && t.day == today).count();
     let total = tasks.iter().filter(|t| t.day == today || !t.done).count();
     g.text(&format!("{done}/{total}"), &g.f.big, [l, t + 4.0, l + 140.0, t + 40.0], WHITE);
-    g.text("Selesai hari ini", &g.f.small, [l, t + 44.0, l + 140.0, t + 60.0], GRAY);
+    g.text("Done today", &g.f.small, [l, t + 44.0, l + 140.0, t + 60.0], GRAY);
 
     let add = [l - 2.0, t + 68.0, l + 82.0, t + 94.0];
     g.rrect(add, 13.0, CHIP);
     g.text("\u{E710}", &g.f.icon_small, [add[0] + 6.0, add[1], add[0] + 26.0, add[3]], WHITE);
-    g.text("Tambah", &g.f.small, [add[0] + 28.0, add[1], add[2], add[3]], WHITE);
+    g.text("Add",&g.f.small, [add[0] + 28.0, add[1], add[2], add[3]], WHITE);
     buttons.push((add, Action::TodoAdd));
 
     // kartu daftar: acara kalender hari ini di atas (hanya dibaca), lalu tugas
@@ -28,7 +28,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     let order = todo::sorted(tasks);
     if order.is_empty() && events.is_empty() {
         g.text("\u{E9D5}", &g.f.icon_big, [card[0], card[1] + 14.0, card[2], card[1] + 48.0], DIM);
-        g.text("Tidak ada tugas.", &g.f.center, [card[0], card[1] + 52.0, card[2], card[1] + 72.0], GRAY);
+        g.text("No tasks.", &g.f.center, [card[0], card[1] + 52.0, card[2], card[1] + 72.0], GRAY);
         return;
     }
     let mut row = 0;
@@ -37,7 +37,7 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
         let y = row_y(row);
         g.text("\u{E787}", &g.f.icon_small, [cl, y, cl + 16.0, y + 24.0], ACCENT);
         g.text(&e.title, &g.f.small, [cl + 20.0, y, cr - 40.0, y + 24.0], WHITE);
-        g.text(&e.min.map_or("Seharian".into(), clock::hhmm), &g.f.rsmall, [cr - 50.0, y, cr - 2.0, y + 24.0], GRAY);
+        g.text(&e.min.map_or("All day".into(), clock::hhmm), &g.f.rsmall, [cr - 50.0, y, cr - 2.0, y + 24.0], GRAY);
         row += 1;
     }
     for &i in order.iter().take(ROWS - row) {
@@ -64,6 +64,6 @@ pub fn draw(app: &App, g: &Gfx, [l, t, r, _b]: R, buttons: &mut Vec<(R, Action)>
     }
     let hidden = (events.len() + order.len()).saturating_sub(row);
     if hidden > 0 {
-        g.text(&format!("+{hidden} lagi"), &g.f.small, [l + 90.0, t + 72.0, l + 148.0, t + 90.0], GRAY);
+        g.text(&format!("+{hidden} more"), &g.f.small, [l + 90.0, t + 72.0, l + 148.0, t + 90.0], GRAY);
     }
 }

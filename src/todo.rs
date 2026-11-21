@@ -22,7 +22,7 @@ fn as_time(w: &str) -> Option<u32> {
 /// "besok", "lusa", "25/12", atau "25/12/2027" -> hari sejak 1970. Tanggal tanpa tahun yang sudah lewat berarti tahun depan.
 fn as_day(w: &str, today: i64) -> Option<i64> {
     match w.to_lowercase().as_str() {
-        "besok" => return Some(today + 1),
+        "besok" | "tomorrow" => return Some(today + 1),
         "lusa" => return Some(today + 2),
         _ => {}
     }
@@ -143,6 +143,7 @@ mod tests {
         assert_eq!(p("   "), None);
         // hari lain: kata "besok"/"lusa" atau tanggal, di awal atau akhir, boleh digabung dengan jam
         assert_eq!(p("Rapat tim besok 14:30"), Some(("Rapat tim".into(), Some(870), Some(today + 1))));
+        assert_eq!(p("Rapat tim tomorrow 14:30"), p("Rapat tim besok 14:30"));
         assert_eq!(p("lusa Bayar listrik"), Some(("Bayar listrik".into(), None, Some(today + 2))));
         assert_eq!(p("Natal 25/12"), Some(("Natal".into(), None, Some(crate::clock::days_from_civil(2026, 12, 25)))));
         // tanggal tanpa tahun yang sudah lewat berarti tahun depan
